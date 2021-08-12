@@ -7,10 +7,11 @@ import math
 from dataclasses import dataclass, field
 
 import torch
+from omegaconf import II
+
 from fairseq import metrics, utils
 from fairseq.criterions import FairseqCriterion, register_criterion
 from fairseq.dataclass import FairseqDataclass
-from omegaconf import II
 
 
 @dataclass
@@ -55,12 +56,12 @@ def label_smoothed_nll_loss(lprobs, target, epsilon, ignore_index=None, reduce=T
 )
 class LabelSmoothedCrossEntropyCriterion(FairseqCriterion):
     def __init__(
-        self,
-        task,
-        sentence_avg,
-        label_smoothing,
-        ignore_prefix_size=0,
-        report_accuracy=False,
+            self,
+            task,
+            sentence_avg,
+            label_smoothing,
+            ignore_prefix_size=0,
+            report_accuracy=False,
     ):
         super().__init__(task)
         self.sentence_avg = sentence_avg
@@ -99,11 +100,11 @@ class LabelSmoothedCrossEntropyCriterion(FairseqCriterion):
         target = model.get_targets(sample, net_output)
         if self.ignore_prefix_size > 0:
             if getattr(lprobs, "batch_first", False):
-                lprobs = lprobs[:, self.ignore_prefix_size :, :].contiguous()
-                target = target[:, self.ignore_prefix_size :].contiguous()
+                lprobs = lprobs[:, self.ignore_prefix_size:, :].contiguous()
+                target = target[:, self.ignore_prefix_size:].contiguous()
             else:
-                lprobs = lprobs[self.ignore_prefix_size :, :, :].contiguous()
-                target = target[self.ignore_prefix_size :, :].contiguous()
+                lprobs = lprobs[self.ignore_prefix_size:, :, :].contiguous()
+                target = target[self.ignore_prefix_size:, :].contiguous()
         return lprobs.view(-1, lprobs.size(-1)), target.view(-1)
 
     def compute_loss(self, model, net_output, sample, reduce=True):
@@ -159,6 +160,16 @@ class LabelSmoothedCrossEntropyCriterion(FairseqCriterion):
                 if meters["total"].sum > 0
                 else float("nan"),
             )
+
+        for key in logging_outputs[0]:
+            if key[-5:] == "-loss":
+                val = sum(log.get(key, 0) for log in logging_outputs)
+                metrics.log_scalar(
+                    key[:-5],
+                    val / sample_size / math.log(2) if sample_size > 0 else 0.0,
+                    sample_size,
+                    round=3,
+                )
 
     @staticmethod
     def logging_outputs_can_be_summed() -> bool:

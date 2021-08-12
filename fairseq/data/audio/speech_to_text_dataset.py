@@ -13,6 +13,7 @@ from typing import Dict, List, Optional, NamedTuple
 
 import numpy as np
 import torch
+
 from fairseq.data import (
     ConcatDataset,
     Dictionary,
@@ -31,7 +32,6 @@ from fairseq.data.audio.audio_utils import (
 )
 from fairseq.data.audio.feature_transforms import CompositeAudioFeatureTransform
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -39,6 +39,7 @@ class S2TDataConfig(object):
     """Wrapper class for data config YAML"""
 
     def __init__(self, yaml_path: Path):
+        self.tgt_field = None
         try:
             import yaml
         except ImportError:
@@ -61,6 +62,11 @@ class S2TDataConfig(object):
         return self.config.get("vocab_filename", "dict.txt")
 
     @property
+    def src_vocab_filename(self):
+        """fairseq vocabulary file under data root"""
+        return self.config.get("src_vocab_filename", "dict.txt")
+
+    @property
     def shuffle(self) -> bool:
         """Shuffle dataset samples before batching"""
         return self.config.get("shuffle", False)
@@ -80,6 +86,10 @@ class S2TDataConfig(object):
         the other items providing the tokenizer-specific arguments.
         Tokenizers are defined in `fairseq.data.encoders.*`"""
         return self.config.get("bpe_tokenizer", {"bpe": None})
+
+    @property
+    def src_bpe_tokenizer(self) -> Dict:
+        return self.config.get("src_bpe_tokenizer", {"bpe": None})
 
     @property
     def prepend_tgt_lang_tag(self) -> bool:
@@ -145,11 +155,11 @@ def get_features_from_npy_or_audio(path):
 
 
 def get_features_or_waveform_from_stored_zip(
-    path,
-    byte_offset,
-    byte_size,
-    need_waveform=False,
-    use_sample_rate=-1,
+        path,
+        byte_offset,
+        byte_size,
+        need_waveform=False,
+        use_sample_rate=-1,
 ):
     assert path.endswith(".zip")
     data = read_from_stored_zip(path, byte_offset, byte_size)
@@ -203,7 +213,7 @@ def get_features_or_waveform(path: str, need_waveform=False, use_sample_rate=-1)
 
 
 def _collate_frames(
-    frames: List[torch.Tensor], is_audio_input: bool = False
+        frames: List[torch.Tensor], is_audio_input: bool = False
 ) -> torch.Tensor:
     """
     Convert a list of 2D frames into a padded 3D tensor
@@ -227,27 +237,32 @@ class SpeechToTextDatasetItem(NamedTuple):
     index: int
     source: torch.Tensor
     target: Optional[torch.Tensor] = None
+    transcript: Optional[torch.Tensor] = None
+    ASR_output: Optional[torch.Tensor] = None
 
 
 class SpeechToTextDataset(FairseqDataset):
     LANG_TAG_TEMPLATE = "<lang:{}>"
 
     def __init__(
-        self,
-        split: str,
-        is_train_split: bool,
-        cfg: S2TDataConfig,
-        audio_paths: List[str],
-        n_frames: List[int],
-        src_texts: Optional[List[str]] = None,
-        tgt_texts: Optional[List[str]] = None,
-        speakers: Optional[List[str]] = None,
-        src_langs: Optional[List[str]] = None,
-        tgt_langs: Optional[List[str]] = None,
-        ids: Optional[List[str]] = None,
-        tgt_dict: Optional[Dictionary] = None,
-        pre_tokenizer=None,
-        bpe_tokenizer=None,
+            self,
+            split: str,
+            is_train_split: bool,
+            cfg: S2TDataConfig,
+            audio_paths: List[str],
+            n_frames: List[int],
+            src_texts: Optional[List[str]] = None,
+            tgt_texts: Optional[List[str]] = None,
+            speakers: Optional[List[str]] = None,
+            src_langs: Optional[List[str]] = None,
+            tgt_langs: Optional[List[str]] = None,
+            ids: Optional[List[str]] = None,
+            tgt_dict: Optional[Dictionary] = None,
+            pre_tokenizer=None,
+            bpe_tokenizer=None,
+            src_dict=None,
+            src_bpe_tokenizer=None,
+            asr_output=None
     ):
         self.split, self.is_train_split = split, is_train_split
         self.cfg = cfg
@@ -261,11 +276,12 @@ class SpeechToTextDataset(FairseqDataset):
         assert tgt_langs is None or len(tgt_langs) == self.n_samples
         assert ids is None or len(ids) == self.n_samples
         assert (tgt_dict is None and tgt_texts is None) or (
-            tgt_dict is not None and tgt_texts is not None
+                tgt_dict is not None and tgt_texts is not None
         )
-        self.src_texts, self.tgt_texts = src_texts, tgt_texts
+        self.src_texts, self.tgt_texts, self.asr_output = src_texts, tgt_texts, asr_output
         self.src_langs, self.tgt_langs = src_langs, tgt_langs
         self.tgt_dict = tgt_dict
+        self.src_dict = src_dict
         self.check_tgt_lang_tag()
         self.ids = ids
         self.shuffle = cfg.shuffle if is_train_split else False
@@ -276,6 +292,7 @@ class SpeechToTextDataset(FairseqDataset):
 
         self.pre_tokenizer = pre_tokenizer
         self.bpe_tokenizer = bpe_tokenizer
+        self.src_bpe_tokenizer = src_bpe_tokenizer
 
         self.tgt_lens = self.get_tgt_lens_and_check_oov()
 
@@ -301,10 +318,10 @@ class SpeechToTextDataset(FairseqDataset):
 
     def __repr__(self):
         return (
-            self.__class__.__name__
-            + f'(split="{self.split}", n_samples={self.n_samples}, '
-            f"prepend_tgt_lang_tag={self.cfg.prepend_tgt_lang_tag}, "
-            f"shuffle={self.shuffle}, transforms={self.feature_transforms})"
+                self.__class__.__name__
+                + f'(split="{self.split}", n_samples={self.n_samples}, '
+                  f"prepend_tgt_lang_tag={self.cfg.prepend_tgt_lang_tag}, "
+                  f"shuffle={self.shuffle}, transforms={self.feature_transforms})"
         )
 
     @classmethod
@@ -329,11 +346,28 @@ class SpeechToTextDataset(FairseqDataset):
         text = self.tokenize(self.bpe_tokenizer, text)
         return text
 
+    def get_tokenized_src_text(self, index: int):
+        text = self.tokenize(self.pre_tokenizer, self.src_texts[index])
+        text = self.tokenize(self.src_bpe_tokenizer, text)
+        return text
+
+    def get_tokenized_asr_output_text(self, index: int):
+        text = self.tokenize(self.pre_tokenizer, self.asr_output[index])
+        text = self.tokenize(self.src_bpe_tokenizer, text)
+        return text
+
     @classmethod
     def get_lang_tag_idx(cls, lang: str, dictionary: Dictionary):
         lang_tag_idx = dictionary.index(cls.LANG_TAG_TEMPLATE.format(lang))
         assert lang_tag_idx != dictionary.unk()
         return lang_tag_idx
+
+    def tokenize_text(self, text: str, is_src=False):
+        if self.pre_tokenizer is not None:
+            text = self.pre_tokenizer.encode(text)
+        if self.bpe_tokenizer is not None:
+            text = self.bpe_tokenizer.encode(text) if not is_src else self.src_bpe_tokenizer.encode(text)
+        return text
 
     def __getitem__(self, index: int) -> SpeechToTextDatasetItem:
         source = get_features_or_waveform(
@@ -358,13 +392,28 @@ class SpeechToTextDataset(FairseqDataset):
                 )
                 target = torch.cat((torch.LongTensor([lang_tag_idx]), target), 0)
 
-        return SpeechToTextDatasetItem(index=index, source=source, target=target)
+        transcript = None
+        if self.src_dict is not None and self.src_texts is not None and self.src_bpe_tokenizer is not None:
+            tokenized = self.get_tokenized_src_text(index)
+            transcript = self.src_dict.encode_line(
+                tokenized, add_if_not_exist=False, append_eos=True
+            ).long()
+
+        ASR_output = None
+        if self.src_dict is not None and self.asr_output is not None and self.src_bpe_tokenizer is not None:
+            tokenized = self.get_tokenized_asr_output_text(index)
+            ASR_output = self.src_dict.encode_line(
+                tokenized, add_if_not_exist=False, append_eos=True
+            ).long()
+
+        return SpeechToTextDatasetItem(index=index, source=source, target=target, transcript=transcript,
+                                       ASR_output=ASR_output)
 
     def __len__(self):
         return self.n_samples
 
     def collater(
-        self, samples: List[SpeechToTextDatasetItem], return_order: bool = False
+            self, samples: List[SpeechToTextDatasetItem], return_order: bool = False
     ) -> Dict:
         if len(samples) == 0:
             return {}
@@ -379,27 +428,31 @@ class SpeechToTextDataset(FairseqDataset):
         target, target_lengths = None, None
         prev_output_tokens = None
         ntokens = None
-        if self.tgt_texts is not None:
-            target = fairseq_data_utils.collate_tokens(
-                [x.target for x in samples],
-                self.tgt_dict.pad(),
-                self.tgt_dict.eos(),
-                left_pad=False,
-                move_eos_to_beginning=False,
-            )
+
+        def _process(tokens, dict):
+            target = fairseq_data_utils.collate_tokens(tokens, dict.pad(), dict.eos(), left_pad=False,
+                                                       move_eos_to_beginning=False)
             target = target.index_select(0, order)
-            target_lengths = torch.tensor(
-                [x.target.size()[0] for x in samples], dtype=torch.long
-            ).index_select(0, order)
-            prev_output_tokens = fairseq_data_utils.collate_tokens(
-                [x.target for x in samples],
-                self.tgt_dict.pad(),
-                self.tgt_dict.eos(),
-                left_pad=False,
-                move_eos_to_beginning=True,
-            )
+            prev_output_tokens = fairseq_data_utils.collate_tokens(tokens, dict.pad(), dict.eos(), left_pad=False,
+                                                                   move_eos_to_beginning=True)
             prev_output_tokens = prev_output_tokens.index_select(0, order)
+
+            target_lengths = torch.tensor([t.size()[0] for t in tokens], dtype=torch.long).index_select(0, order)
+            return target, prev_output_tokens, target_lengths
+
+        if self.tgt_texts is not None:
+            target, prev_output_tokens, target_lengths = _process([x.target for x in samples], self.tgt_dict)
             ntokens = sum(x.target.size()[0] for x in samples)
+
+        if self.src_dict is not None and self.src_texts is not None:
+            transcript, prev_transcript, transcript_lengths = _process([t.transcript for t in samples], self.src_dict)
+        else:
+            transcript, prev_transcript, transcript_lengths = None, None, None
+
+        if self.src_dict is not None and self.asr_output is not None:
+            asr_output, prev_asr_output, asr_output_length = _process([t.ASR_output for t in samples], self.src_dict)
+        else:
+            asr_output, prev_asr_output, asr_output_length = None, None, None
 
         net_input = {
             "src_tokens": frames,
@@ -413,7 +466,18 @@ class SpeechToTextDataset(FairseqDataset):
             "target_lengths": target_lengths,
             "ntokens": ntokens,
             "nsentences": len(samples),
+            "transcript": {
+                "tokens": transcript,
+                "lengths": transcript_lengths,
+                "prev_output_tokens": prev_transcript
+            },
         }
+        if asr_output is not None:
+            out['asr_output'] = {
+                "tokens": asr_output,
+                "lengths": asr_output_length,
+                "prev_output_tokens": prev_asr_output
+            }
         if return_order:
             out["order"] = order
         return out
@@ -451,27 +515,35 @@ class SpeechToTextDatasetCreator(object):
     KEY_TGT_TEXT = "tgt_text"
     # optional columns
     KEY_SPEAKER, KEY_SRC_TEXT = "speaker", "src_text"
+    ASR_OUTPUT = "asr_output"
     KEY_SRC_LANG, KEY_TGT_LANG = "src_lang", "tgt_lang"
     # default values
     DEFAULT_SPEAKER = DEFAULT_SRC_TEXT = DEFAULT_LANG = ""
 
     @classmethod
     def _from_list(
-        cls,
-        split_name: str,
-        is_train_split,
-        samples: List[Dict],
-        cfg: S2TDataConfig,
-        tgt_dict,
-        pre_tokenizer,
-        bpe_tokenizer,
+            cls,
+            split_name: str,
+            is_train_split,
+            samples: List[Dict],
+            cfg: S2TDataConfig,
+            tgt_dict,
+            pre_tokenizer,
+            bpe_tokenizer,
+            tgt_field="tgt_text",
+            src_dict=None,
+            src_bpe_tokenizer=None
     ) -> SpeechToTextDataset:
         audio_root = Path(cfg.audio_root)
         ids = [s[cls.KEY_ID] for s in samples]
         audio_paths = [(audio_root / s[cls.KEY_AUDIO]).as_posix() for s in samples]
         n_frames = [int(s[cls.KEY_N_FRAMES]) for s in samples]
-        tgt_texts = [s[cls.KEY_TGT_TEXT] for s in samples]
+        tgt_texts = [s[tgt_field] for s in samples]
         src_texts = [s.get(cls.KEY_SRC_TEXT, cls.DEFAULT_SRC_TEXT) for s in samples]
+        asr_output = None
+        if samples[0].get(cls.ASR_OUTPUT, None) is not None:
+            asr_output = [s.get(cls.ASR_OUTPUT, "") for s in samples]
+
         speakers = [s.get(cls.KEY_SPEAKER, cls.DEFAULT_SPEAKER) for s in samples]
         src_langs = [s.get(cls.KEY_SRC_LANG, cls.DEFAULT_LANG) for s in samples]
         tgt_langs = [s.get(cls.KEY_TGT_LANG, cls.DEFAULT_LANG) for s in samples]
@@ -490,11 +562,14 @@ class SpeechToTextDatasetCreator(object):
             tgt_dict=tgt_dict,
             pre_tokenizer=pre_tokenizer,
             bpe_tokenizer=bpe_tokenizer,
+            src_dict=src_dict,
+            src_bpe_tokenizer=src_bpe_tokenizer,
+            asr_output=asr_output
         )
 
     @classmethod
     def get_size_ratios(
-        cls, datasets: List[SpeechToTextDataset], alpha: float = 1.0
+            cls, datasets: List[SpeechToTextDataset], alpha: float = 1.0
     ) -> List[float]:
         """Size ratios for temperature-based sampling
         (https://arxiv.org/abs/1907.05019)"""
@@ -546,36 +621,44 @@ class SpeechToTextDatasetCreator(object):
 
     @classmethod
     def _from_tsv(
-        cls,
-        root: str,
-        cfg: S2TDataConfig,
-        split: str,
-        tgt_dict,
-        is_train_split: bool,
-        pre_tokenizer,
-        bpe_tokenizer,
+            cls,
+            root: str,
+            cfg: S2TDataConfig,
+            split: str,
+            tgt_dict,
+            is_train_split: bool,
+            pre_tokenizer,
+            bpe_tokenizer,
+            tgt_field="tgt_text",
+            src_dict=None,
+            src_bpe_tokenizer=None
     ) -> SpeechToTextDataset:
         samples = cls._load_samples_from_tsv(root, split)
         return cls._from_list(
-            split, is_train_split, samples, cfg, tgt_dict, pre_tokenizer, bpe_tokenizer
+            split, is_train_split, samples, cfg, tgt_dict, pre_tokenizer, bpe_tokenizer, tgt_field=tgt_field,
+            src_dict=src_dict, src_bpe_tokenizer=src_bpe_tokenizer
         )
 
     @classmethod
     def from_tsv(
-        cls,
-        root: str,
-        cfg: S2TDataConfig,
-        splits: str,
-        tgt_dict,
-        pre_tokenizer,
-        bpe_tokenizer,
-        is_train_split: bool,
-        epoch: int,
-        seed: int,
+            cls,
+            root: str,
+            cfg: S2TDataConfig,
+            splits: str,
+            tgt_dict,
+            pre_tokenizer,
+            bpe_tokenizer,
+            is_train_split: bool,
+            epoch: int,
+            seed: int,
+            tgt_field="tgt_text",
+            src_dict=None,
+            src_bpe_tokenizer=None
     ) -> SpeechToTextDataset:
         datasets = [
             cls._from_tsv(
-                root, cfg, split, tgt_dict, is_train_split, pre_tokenizer, bpe_tokenizer
+                root, cfg, split, tgt_dict, is_train_split, pre_tokenizer, bpe_tokenizer, tgt_field=tgt_field,
+                src_dict=src_dict, src_bpe_tokenizer=src_bpe_tokenizer
             )
             for split in splits.split(",")
         ]

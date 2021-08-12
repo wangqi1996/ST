@@ -57,6 +57,7 @@ class TransformerEncoderBase(FairseqEncoder):
         self.encoder_layerdrop = cfg.encoder.layerdrop
 
         embed_dim = embed_tokens.embedding_dim
+        self.embed_dim = embed_dim
         self.padding_idx = embed_tokens.padding_idx
         self.max_source_positions = cfg.max_source_positions
 
@@ -114,6 +115,9 @@ class TransformerEncoderBase(FairseqEncoder):
         layer = fsdp_wrap(layer, min_num_params=min_params_to_wrap)
         return layer
 
+    def forward_token_embedding(self, src_tokens):
+        return self.embed_tokens(src_tokens)
+
     def forward_embedding(
         self, src_tokens, token_embedding: Optional[torch.Tensor] = None
     ):
@@ -136,6 +140,7 @@ class TransformerEncoderBase(FairseqEncoder):
         src_lengths: Optional[torch.Tensor] = None,
         return_all_hiddens: bool = False,
         token_embeddings: Optional[torch.Tensor] = None,
+        **kwargs,
     ):
         """
         Args:
@@ -160,6 +165,8 @@ class TransformerEncoderBase(FairseqEncoder):
                   hidden states of shape `(src_len, batch, embed_dim)`.
                   Only populated if *return_all_hiddens* is True.
         """
+        if kwargs.get('source_token_embedding', None) is not None:
+            token_embeddings = kwargs['source_token_embedding']
         return self.forward_scriptable(
             src_tokens, src_lengths, return_all_hiddens, token_embeddings
         )

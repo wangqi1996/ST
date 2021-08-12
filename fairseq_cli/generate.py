@@ -17,24 +17,24 @@ from itertools import chain
 
 import numpy as np
 import torch
+from omegaconf import DictConfig
+
 from fairseq import checkpoint_utils, options, scoring, tasks, utils
 from fairseq.dataclass.utils import convert_namespace_to_omegaconf
 from fairseq.logging import progress_bar
 from fairseq.logging.meters import StopwatchMeter, TimeMeter
-from omegaconf import DictConfig
 
 
 def main(cfg: DictConfig):
-
     if isinstance(cfg, Namespace):
         cfg = convert_namespace_to_omegaconf(cfg)
 
     assert cfg.common_eval.path is not None, "--path required for generation!"
     assert (
-        not cfg.generation.sampling or cfg.generation.nbest == cfg.generation.beam
+            not cfg.generation.sampling or cfg.generation.nbest == cfg.generation.beam
     ), "--sampling requires --nbest to be equal to --beam"
     assert (
-        cfg.generation.replace_unk is None or cfg.dataset.dataset_impl == "raw"
+            cfg.generation.replace_unk is None or cfg.dataset.dataset_impl == "raw"
     ), "--replace-unk requires a raw text dataset (--dataset-impl=raw)"
 
     if cfg.common_eval.results_path is not None:
@@ -81,12 +81,14 @@ def _main(cfg: DictConfig, output_file):
     # Load dataset splits
     task = tasks.setup_task(cfg.task)
 
-
     # Set dictionaries
     try:
         src_dict = getattr(task, "source_dictionary", None)
     except NotImplementedError:
         src_dict = None
+
+    # TODO speech-to-text
+    src_dict = None
     tgt_dict = task.target_dictionary
 
     overrides = ast.literal_eval(cfg.common_eval.model_overrides)
@@ -290,8 +292,8 @@ def _main(cfg: DictConfig, output_file):
                                     lambda x: "{:.4f}".format(x),
                                     # convert from base e to base 2
                                     hypo["positional_scores"]
-                                    .div_(math.log(2))
-                                    .tolist(),
+                                        .div_(math.log(2))
+                                        .tolist(),
                                 )
                             ),
                         ),

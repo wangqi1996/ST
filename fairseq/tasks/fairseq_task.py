@@ -10,13 +10,13 @@ from argparse import Namespace
 from typing import Any, Callable, Dict, List
 
 import torch
+from omegaconf import DictConfig
+
 from fairseq import metrics, search, tokenizer, utils
 from fairseq.data import Dictionary, FairseqDataset, data_utils, encoders, iterators
 from fairseq.dataclass import FairseqDataclass
 from fairseq.dataclass.utils import gen_parser_from_dataclass
 from fairseq.optim.amp_optimizer import AMPOptimizer
-from omegaconf import DictConfig
-
 
 logger = logging.getLogger(__name__)
 
@@ -96,7 +96,7 @@ class FairseqTask(object):
 
     @classmethod
     def build_dictionary(
-        cls, filenames, workers=1, threshold=-1, nwords=-1, padding_factor=8
+            cls, filenames, workers=1, threshold=-1, nwords=-1, padding_factor=8
     ):
         """Build the dictionary
 
@@ -131,11 +131,11 @@ class FairseqTask(object):
         return os.pathsep in getattr(self.cfg, "data", "")
 
     def load_dataset(
-        self,
-        split: str,
-        combine: bool = False,
-        task_cfg: FairseqDataclass = None,
-        **kwargs
+            self,
+            split: str,
+            combine: bool = False,
+            task_cfg: FairseqDataclass = None,
+            **kwargs
     ):
         """Load a given dataset split.
 
@@ -166,7 +166,7 @@ class FairseqTask(object):
         return self.datasets[split]
 
     def filter_indices_by_size(
-        self, indices, dataset, max_positions=None, ignore_invalid_inputs=False
+            self, indices, dataset, max_positions=None, ignore_invalid_inputs=False
     ):
         """
         Filter examples that are too large
@@ -206,20 +206,20 @@ class FairseqTask(object):
         return getattr(dataset, "can_reuse_epoch_itr_across_epochs", False)
 
     def get_batch_iterator(
-        self,
-        dataset,
-        max_tokens=None,
-        max_sentences=None,
-        max_positions=None,
-        ignore_invalid_inputs=False,
-        required_batch_size_multiple=1,
-        seed=1,
-        num_shards=1,
-        shard_id=0,
-        num_workers=0,
-        epoch=1,
-        data_buffer_size=0,
-        disable_iterator_cache=False,
+            self,
+            dataset,
+            max_tokens=None,
+            max_sentences=None,
+            max_positions=None,
+            ignore_invalid_inputs=False,
+            required_batch_size_multiple=1,
+            seed=1,
+            num_shards=1,
+            shard_id=0,
+            num_workers=0,
+            epoch=1,
+            data_buffer_size=0,
+            disable_iterator_cache=False,
     ):
         """
         Get an iterator that yields batches of data from the given dataset.
@@ -337,7 +337,7 @@ class FairseqTask(object):
         return criterions.build_criterion(cfg, self)
 
     def build_generator(
-        self, models, args, seq_gen_cls=None, extra_gen_cls_kwargs=None, prefix_allowed_tokens_fn=None,
+            self, models, args, seq_gen_cls=None, extra_gen_cls_kwargs=None, prefix_allowed_tokens_fn=None,
     ):
         """
         Build a :class:`~fairseq.SequenceGenerator` instance for this
@@ -388,16 +388,16 @@ class FairseqTask(object):
         if prefix_allowed_tokens_fn is None:
             prefix_allowed_tokens_fn = getattr(args, "prefix_allowed_tokens_fn", None)
         if (
-            sum(
-                int(cond)
-                for cond in [
-                    sampling,
-                    diverse_beam_groups > 0,
-                    match_source_len,
-                    diversity_rate > 0,
-                ]
-            )
-            > 1
+                sum(
+                    int(cond)
+                    for cond in [
+                        sampling,
+                        diverse_beam_groups > 0,
+                        match_source_len,
+                        diversity_rate > 0,
+                    ]
+                )
+                > 1
         ):
             raise ValueError("Provided Search parameters are mutually exclusive.")
         assert sampling_topk < 0 or sampling, "--sampling-topk requires --sampling"
@@ -459,11 +459,12 @@ class FairseqTask(object):
             match_source_len=getattr(args, "match_source_len", False),
             no_repeat_ngram_size=getattr(args, "no_repeat_ngram_size", 0),
             search_strategy=search_strategy,
+            src_dict=self.source_dictionary,
             **extra_gen_cls_kwargs,
         )
 
     def train_step(
-        self, sample, model, criterion, optimizer, update_num, ignore_grad=False
+            self, sample, model, criterion, optimizer, update_num, ignore_grad=False
     ):
         """
         Do forward and backward, and return the loss as computed by *criterion*
@@ -489,7 +490,7 @@ class FairseqTask(object):
         model.set_num_updates(update_num)
         with torch.autograd.profiler.record_function("forward"):
             with torch.cuda.amp.autocast(enabled=(isinstance(optimizer, AMPOptimizer))):
-                loss, sample_size, logging_output = criterion(model, sample)
+                loss, sample_size, logging_output = criterion(model, sample, step=update_num)
         if ignore_grad:
             loss *= 0
         with torch.autograd.profiler.record_function("backward"):
@@ -506,12 +507,12 @@ class FairseqTask(object):
         optimizer.step()
 
     def build_dataset_for_inference(
-        self, src_tokens: List[torch.Tensor], src_lengths: List[int], **kwargs
+            self, src_tokens: List[torch.Tensor], src_lengths: List[int], **kwargs
     ) -> torch.utils.data.Dataset:
         raise NotImplementedError
 
     def inference_step(
-        self, generator, models, sample, prefix_tokens=None, constraints=None
+            self, generator, models, sample, prefix_tokens=None, constraints=None
     ):
         with torch.no_grad():
             return generator.generate(
