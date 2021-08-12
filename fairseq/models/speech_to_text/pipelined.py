@@ -8,7 +8,7 @@ from fairseq.models import (
     register_model_architecture,
     BaseFairseqModel
 )
-from .adapter import load_pretrained_model, TransformerAdapter, MLPAdapter
+from .adapter import load_pretrained_model, TransformerAdapter
 
 logger = logging.getLogger(__name__)
 
@@ -124,7 +124,7 @@ class PipelinedST(BaseFairseqModel):
                 adapter = adapter_output[key][i].transpose(0, 1)
                 MT_output = MT_embedding[key][i].transpose(0, 1)
                 loss["mse-" + str(i) + "-loss"] = {
-                    "loss": F.mse_loss(adapter[mask], MT_output[mask], reduction="none").mean() * 10000
+                    "loss": F.mse_loss(adapter[mask], MT_output[mask], reduction="none").sum(-1).mean()
                 }
 
         if self.word_loss:
