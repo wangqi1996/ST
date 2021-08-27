@@ -8,3 +8,5 @@ from .convtransformer import *  # noqa
 from .s2t_transformer import *  # noqa
 from .xm_transformer import *  # noqa
 from .pipelined import *
+from .s2t_adapter import *
+from .join import *

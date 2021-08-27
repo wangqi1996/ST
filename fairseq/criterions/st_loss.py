@@ -16,15 +16,21 @@ class STCriterion(LabelSmoothedCrossEntropyCriterion):
         outputs = model(**sample["net_input"], sample=sample, step=step)
         losses = []
         nll_loss = []
+        sample_size = (
+            sample["target"].size(0) if self.sentence_avg else sample["ntokens"]
+        )
         for obj in outputs:
+            if obj in ['word_out']:
+                continue
             if outputs[obj].get("loss", None) is not None:
                 losses.append({
                     "loss": outputs[obj].get('loss'),
                     "name": obj,
                     "factor": outputs[obj].get('factor', 1),
                 })
-            elif obj in ["word_ins", "MT_word_ins"]:
-                word_loss, word_nll_loss = self.compute_loss(model, outputs[obj]['out'], sample, reduce=reduce)
+            elif obj in ["word_ins", "MT_word_ins", "source_word_ins", "ST", "MT", "ASR", "DAE"]:
+                word_loss, word_nll_loss = self.compute_loss(model, outputs[obj]['out'], sample, reduce=reduce,
+                                                             target=outputs[obj]['tgt'])
                 losses.append({
                     "loss": word_loss,
                     "name": obj + '-loss',
@@ -34,10 +40,6 @@ class STCriterion(LabelSmoothedCrossEntropyCriterion):
 
             if outputs[obj].get("nll_loss", False):
                 nll_loss += [losses[-1].get("nll_loss", 0.0)]
-
-        sample_size = (
-            sample["target"].size(0) if self.sentence_avg else sample["ntokens"]
-        )
 
         loss = sum(l["loss"] for l in losses)
         nll_loss = sum(l for l in nll_loss) if len(nll_loss) > 0 else loss.new_tensor(0)
@@ -49,6 +51,11 @@ class STCriterion(LabelSmoothedCrossEntropyCriterion):
             "nsentences": sample["target"].size(0),
             "sample_size": sample_size,
         }
+
+        if self.report_accuracy:
+            n_correct, total = self.compute_accuracy(model, outputs['word_out'], sample)
+            logging_output["n_correct"] = utils.item(n_correct.data)
+            logging_output["total"] = utils.item(total.data)
 
         for l in losses:
             logging_output[l["name"]] = utils.item(l["loss"].data) if reduce else l["loss"].data

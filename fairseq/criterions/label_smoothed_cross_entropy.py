@@ -69,7 +69,7 @@ class LabelSmoothedCrossEntropyCriterion(FairseqCriterion):
         self.ignore_prefix_size = ignore_prefix_size
         self.report_accuracy = report_accuracy
 
-    def forward(self, model, sample, reduce=True):
+    def forward(self, model, sample, reduce=True, **kwargs):
         """Compute the loss for the given sample.
 
         Returns a tuple with three elements:
@@ -77,7 +77,7 @@ class LabelSmoothedCrossEntropyCriterion(FairseqCriterion):
         2) the sample size, which is used as the denominator for the gradient
         3) logging outputs to display while training
         """
-        net_output = model(**sample["net_input"])
+        net_output = model(**sample["net_input"], sample=sample)
         loss, nll_loss = self.compute_loss(model, net_output, sample, reduce=reduce)
         sample_size = (
             sample["target"].size(0) if self.sentence_avg else sample["ntokens"]
@@ -95,9 +95,10 @@ class LabelSmoothedCrossEntropyCriterion(FairseqCriterion):
             logging_output["total"] = utils.item(total.data)
         return loss, sample_size, logging_output
 
-    def get_lprobs_and_target(self, model, net_output, sample):
+    def get_lprobs_and_target(self, model, net_output, sample, target=None):
         lprobs = model.get_normalized_probs(net_output, log_probs=True)
-        target = model.get_targets(sample, net_output)
+        if target is None:
+            target = model.get_targets(sample, net_output)
         if self.ignore_prefix_size > 0:
             if getattr(lprobs, "batch_first", False):
                 lprobs = lprobs[:, self.ignore_prefix_size:, :].contiguous()
@@ -107,8 +108,8 @@ class LabelSmoothedCrossEntropyCriterion(FairseqCriterion):
                 target = target[self.ignore_prefix_size:, :].contiguous()
         return lprobs.view(-1, lprobs.size(-1)), target.view(-1)
 
-    def compute_loss(self, model, net_output, sample, reduce=True):
-        lprobs, target = self.get_lprobs_and_target(model, net_output, sample)
+    def compute_loss(self, model, net_output, sample, reduce=True, target=None):
+        lprobs, target = self.get_lprobs_and_target(model, net_output, sample, target=target)
         loss, nll_loss = label_smoothed_nll_loss(
             lprobs,
             target,

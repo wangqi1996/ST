@@ -7,14 +7,14 @@ from fairseq.models import (
     register_model,
     register_model_architecture,
 )
+from fairseq.models.transformer.transformer_base import (
+    TransformerModelBase,
+)
 from fairseq.models.transformer.transformer_config import (
     TransformerConfig,
     DEFAULT_MAX_SOURCE_POSITIONS,
     DEFAULT_MAX_TARGET_POSITIONS,
     DEFAULT_MIN_PARAMS_TO_WRAP,
-)
-from fairseq.models.transformer.transformer_base import (
-    TransformerModelBase,
 )
 
 
@@ -51,25 +51,41 @@ class TransformerModel(TransformerModelBase):
             }
 
         return {
-            'transformer.wmt14.en-fr': moses_subword('https://dl.fbaipublicfiles.com/fairseq/models/wmt14.en-fr.joined-dict.transformer.tar.bz2'),
+            'transformer.wmt14.en-fr': moses_subword(
+                'https://dl.fbaipublicfiles.com/fairseq/models/wmt14.en-fr.joined-dict.transformer.tar.bz2'),
             'transformer.wmt16.en-de': 'https://dl.fbaipublicfiles.com/fairseq/models/wmt16.en-de.joined-dict.transformer.tar.bz2',
-            'transformer.wmt18.en-de': moses_subword('https://dl.fbaipublicfiles.com/fairseq/models/wmt18.en-de.ensemble.tar.gz'),
-            'transformer.wmt19.en-de': moses_fastbpe('https://dl.fbaipublicfiles.com/fairseq/models/wmt19.en-de.joined-dict.ensemble.tar.gz'),
-            'transformer.wmt19.en-ru': moses_fastbpe('https://dl.fbaipublicfiles.com/fairseq/models/wmt19.en-ru.ensemble.tar.gz'),
-            'transformer.wmt19.de-en': moses_fastbpe('https://dl.fbaipublicfiles.com/fairseq/models/wmt19.de-en.joined-dict.ensemble.tar.gz'),
-            'transformer.wmt19.ru-en': moses_fastbpe('https://dl.fbaipublicfiles.com/fairseq/models/wmt19.ru-en.ensemble.tar.gz'),
-            'transformer.wmt19.en-de.single_model': moses_fastbpe('https://dl.fbaipublicfiles.com/fairseq/models/wmt19.en-de.joined-dict.single_model.tar.gz'),
-            'transformer.wmt19.en-ru.single_model': moses_fastbpe('https://dl.fbaipublicfiles.com/fairseq/models/wmt19.en-ru.single_model.tar.gz'),
-            'transformer.wmt19.de-en.single_model': moses_fastbpe('https://dl.fbaipublicfiles.com/fairseq/models/wmt19.de-en.joined-dict.single_model.tar.gz'),
-            'transformer.wmt19.ru-en.single_model': moses_fastbpe('https://dl.fbaipublicfiles.com/fairseq/models/wmt19.ru-en.single_model.tar.gz'),
+            'transformer.wmt18.en-de': moses_subword(
+                'https://dl.fbaipublicfiles.com/fairseq/models/wmt18.en-de.ensemble.tar.gz'),
+            'transformer.wmt19.en-de': moses_fastbpe(
+                'https://dl.fbaipublicfiles.com/fairseq/models/wmt19.en-de.joined-dict.ensemble.tar.gz'),
+            'transformer.wmt19.en-ru': moses_fastbpe(
+                'https://dl.fbaipublicfiles.com/fairseq/models/wmt19.en-ru.ensemble.tar.gz'),
+            'transformer.wmt19.de-en': moses_fastbpe(
+                'https://dl.fbaipublicfiles.com/fairseq/models/wmt19.de-en.joined-dict.ensemble.tar.gz'),
+            'transformer.wmt19.ru-en': moses_fastbpe(
+                'https://dl.fbaipublicfiles.com/fairseq/models/wmt19.ru-en.ensemble.tar.gz'),
+            'transformer.wmt19.en-de.single_model': moses_fastbpe(
+                'https://dl.fbaipublicfiles.com/fairseq/models/wmt19.en-de.joined-dict.single_model.tar.gz'),
+            'transformer.wmt19.en-ru.single_model': moses_fastbpe(
+                'https://dl.fbaipublicfiles.com/fairseq/models/wmt19.en-ru.single_model.tar.gz'),
+            'transformer.wmt19.de-en.single_model': moses_fastbpe(
+                'https://dl.fbaipublicfiles.com/fairseq/models/wmt19.de-en.joined-dict.single_model.tar.gz'),
+            'transformer.wmt19.ru-en.single_model': moses_fastbpe(
+                'https://dl.fbaipublicfiles.com/fairseq/models/wmt19.ru-en.single_model.tar.gz'),
             'transformer.wmt20.en-ta': spm('https://dl.fbaipublicfiles.com/fairseq/models/wmt20.en-ta.single.tar.gz'),
-            'transformer.wmt20.en-iu.news': spm('https://dl.fbaipublicfiles.com/fairseq/models/wmt20.en-iu.news.single.tar.gz'),
-            'transformer.wmt20.en-iu.nh': spm('https://dl.fbaipublicfiles.com/fairseq/models/wmt20.en-iu.nh.single.tar.gz'),
+            'transformer.wmt20.en-iu.news': spm(
+                'https://dl.fbaipublicfiles.com/fairseq/models/wmt20.en-iu.news.single.tar.gz'),
+            'transformer.wmt20.en-iu.nh': spm(
+                'https://dl.fbaipublicfiles.com/fairseq/models/wmt20.en-iu.nh.single.tar.gz'),
             'transformer.wmt20.ta-en': spm('https://dl.fbaipublicfiles.com/fairseq/models/wmt20.ta-en.single.tar.gz'),
-            'transformer.wmt20.iu-en.news': spm('https://dl.fbaipublicfiles.com/fairseq/models/wmt20.iu-en.news.single.tar.gz'),
-            'transformer.wmt20.iu-en.nh': spm('https://dl.fbaipublicfiles.com/fairseq/models/wmt20.iu-en.nh.single.tar.gz'),
-            'transformer.flores101.mm100.615M': spm('https://dl.fbaipublicfiles.com/flores101/pretrained_models/flores101_mm100_615M.tar.gz'),
-            'transformer.flores101.mm100.175M': spm('https://dl.fbaipublicfiles.com/flores101/pretrained_models/flores101_mm100_175M.tar.gz'),
+            'transformer.wmt20.iu-en.news': spm(
+                'https://dl.fbaipublicfiles.com/fairseq/models/wmt20.iu-en.news.single.tar.gz'),
+            'transformer.wmt20.iu-en.nh': spm(
+                'https://dl.fbaipublicfiles.com/fairseq/models/wmt20.iu-en.nh.single.tar.gz'),
+            'transformer.flores101.mm100.615M': spm(
+                'https://dl.fbaipublicfiles.com/flores101/pretrained_models/flores101_mm100_615M.tar.gz'),
+            'transformer.flores101.mm100.175M': spm(
+                'https://dl.fbaipublicfiles.com/flores101/pretrained_models/flores101_mm100_175M.tar.gz'),
         }
         # fmt: on
 
@@ -105,7 +121,7 @@ class TransformerModel(TransformerModelBase):
                     "--share-all-embeddings requires --encoder-embed-dim to match --decoder-embed-dim"
                 )
             if args.decoder_embed_path and (
-                args.decoder_embed_path != args.encoder_embed_path
+                    args.decoder_embed_path != args.encoder_embed_path
             ):
                 raise ValueError(
                     "--share-all-embeddings not compatible with --decoder-embed-path"
@@ -263,3 +279,16 @@ def transformer_wmt_en_de_big_t2t(args):
     args.attention_dropout = getattr(args, "attention_dropout", 0.1)
     args.activation_dropout = getattr(args, "activation_dropout", 0.1)
     transformer_vaswani_wmt_en_de_big(args)
+
+
+@register_model_architecture("transformer", "transformer_256")
+def transformer_256(args):
+    args.encoder_embed_dim = getattr(args, "encoder_embed_dim", 256)
+    args.encoder_ffn_embed_dim = getattr(args, "encoder_ffn_embed_dim", 2048)
+    args.encoder_attention_heads = getattr(args, "encoder_attention_heads", 4)
+    args.encoder_layers = getattr(args, "encoder_layers", 6)
+    args.decoder_embed_dim = getattr(args, "decoder_embed_dim", 256)
+    args.decoder_ffn_embed_dim = getattr(args, "decoder_ffn_embed_dim", 2048)
+    args.decoder_attention_heads = getattr(args, "decoder_attention_heads", 4)
+    args.decoder_layers = getattr(args, "decoder_layers", 6)
+    base_architecture(args)

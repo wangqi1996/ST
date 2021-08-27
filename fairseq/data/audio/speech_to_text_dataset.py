@@ -374,7 +374,7 @@ class SpeechToTextDataset(FairseqDataset):
             self.audio_paths[index],
             need_waveform=self.cfg.use_audio_input,
             use_sample_rate=self.cfg.use_sample_rate,
-        )
+        )  # [频率 * timestep]
         if self.feature_transforms is not None:
             assert not self.cfg.use_audio_input
             source = self.feature_transforms(source)

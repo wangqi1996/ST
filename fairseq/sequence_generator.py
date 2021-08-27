@@ -256,7 +256,8 @@ class SequenceGenerator(nn.Module):
         # compute the encoder output for each beam
         if encoder_out is None:
             with torch.autograd.profiler.record_function("EnsembleModel: forward_encoder"):
-                encoder_outs = self.model.forward_encoder(net_input, source_token_embedding=source_token_embedding)
+                encoder_outs = self.model.forward_encoder(net_input, sample=sample,
+                                                          source_token_embedding=source_token_embedding)
         else:
             encoder_outs = [encoder_out]
 
@@ -765,8 +766,8 @@ class EnsembleModel(nn.Module):
     @torch.jit.export
     def forward_encoder(self, net_input: Dict[str, Tensor], **kwargs):
         if not self.has_encoder():
-            return None
-        return [model.encoder.forward_torchscript(net_input, **kwargs) for model in self.models]
+            return [model.forward_encoder(net_input, **kwargs) for model in self.models]
+        return [model.forward_encoder(net_input, **kwargs) for model in self.models]
 
     @torch.jit.export
     def forward_decoder(

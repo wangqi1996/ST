@@ -2,6 +2,7 @@ import logging
 
 import torch
 import torch.nn.functional as F
+from torch import nn
 
 from fairseq.models import (
     register_model,
@@ -11,12 +12,6 @@ from fairseq.models import (
 from .adapter import load_pretrained_model, TransformerAdapter
 
 logger = logging.getLogger(__name__)
-
-"""
-可优化的点：
-1. freeze ASR model 可以直接load ASR的output hidden state进来，这样不用重复过ASR模型了
-2. 
-"""
 
 
 @register_model("pipelined_st")
@@ -28,32 +23,42 @@ class PipelinedST(BaseFairseqModel):
         self.task = task
         self.ASR_task, self.ASR_model, self.ASR_cfg = load_pretrained_model(args.ASR_path,
                                                                             {"config_yaml": args.ASR_config},
-                                                                            freeze=args.freeze_NMT)
-        self.MT_task, self.MT_model, self.MT_cfg = load_pretrained_model(args.MT_path, freeze=args.freeze_ASR)
+                                                                            freeze=args.freeze_ASR,
+                                                                            freeze_encoder=args.freeze_ASR_encoder)
+        self.MT_task, self.MT_model, self.MT_cfg = load_pretrained_model(args.MT_path, freeze=args.freeze_NMT,
+                                                                         freeze_encoder=args.freeze_NMT_encoder)
 
         self.src_pad = self.task.source_dictionary.pad()
         self.src_eos = self.task.source_dictionary.eos()
         self.src_bos = self.task.source_dictionary.bos()
         self.tgt_pad = self.task.target_dictionary.pad()
 
-        self.adapter = self.build_adapter()
+        deep_adapter = getattr(args, "deep_adapter", False)
+        self.adapter = self.build_adapter(deep_adapter=deep_adapter)
 
         self.hidden_embedding_loss = args.hidden_embedding_loss
         self.word_loss = getattr(args, "word_loss", False)
         self.layer_mse = getattr(args, "layer_mse", False)
         self.MT_loss = getattr(args, "MT_loss", False)
+        self.source_word_loss = getattr(args, "source_word_loss", False)
+        if self.source_word_loss:
+            self.source_output = nn.Linear(self.MT_model.encoder.embed_dim, len(self.task.source_dictionary))
         if self.MT_loss:
             assert not args.freeze_NMT or self.share_adapter
 
         self.glancing_training = getattr(args, "glancing_training", False)
         self.max_step = 100000
+        args.layers = getattr(args, "layers", '')
+        if args.layers:
+            self.layers = list(map(int, args.layers.split(',')))
 
-    def build_adapter(self):
+    def build_adapter(self, deep_adapter=False):
 
         adapter = TransformerAdapter(self.ASR_model.decoder.embed_dim, self.MT_model.encoder.embed_dim,
                                      pad=self.src_pad, MT_cfg=self.MT_cfg.model,
                                      src_dict=self.task.source_dictionary,
-                                     embed_tokens=self.MT_model.encoder.embed_tokens)
+                                     embed_tokens=self.MT_model.encoder.embed_tokens,
+                                     deep_adapter=deep_adapter)
         # adapter = MLPAdapter(self.ASR_model.decoder.embed_dim, self.MT_model.encoder.embed_dim)
 
         init_adapter = getattr(self.args, "init_adapter", False)
@@ -73,6 +78,8 @@ class PipelinedST(BaseFairseqModel):
 
         parser.add_argument('--freeze-NMT', action="store_true")
         parser.add_argument('--freeze-ASR', action="store_true")
+        parser.add_argument('--freeze-NMT-encoder', action="store_true")
+        parser.add_argument('--freeze-ASR-encoder', action="store_true")
 
         parser.add_argument('--init-adapter', action="store_true")
         parser.add_argument('--share-adapter', action="store_true")
@@ -80,10 +87,14 @@ class PipelinedST(BaseFairseqModel):
         parser.add_argument('--hidden-embedding-loss', type=str, default="")  # mse
         parser.add_argument('--word-loss', action="store_true")
         parser.add_argument('--MT-loss', action="store_true")
+        parser.add_argument('--source-word-loss', action="store_true")
         # 1. no freeze NMT   2. share adapter and MT encoder
         parser.add_argument('--layer-mse', action="store_true")
+        parser.add_argument('--layers', type=str, default="")  # 5,6
 
         parser.add_argument('--glancing-training', action="store_true")  # Adapter, MT
+
+        parser.add_argument('--deep-adapter', action="store_true")
 
     def get_ASR_model(self):
         return self.ASR_model
@@ -100,15 +111,26 @@ class PipelinedST(BaseFairseqModel):
         return mask
 
     def forward(self, src_tokens, src_lengths, prev_output_tokens, sample=None, **kwargs):
+        """ eval? """
+        if self.args.freeze_NMT:
+            self.MT_model.eval()
+        if self.args.freeze_NMT_encoder:
+            self.MT_model.encoder.eval()
+        if self.args.freeze_ASR:
+            self.ASR_model.eval()
+        if self.args.freeze_ASR_encoder:
+            self.ASR_model.encoder.eval()
+
         audio_input, audio_length = src_tokens, src_lengths,
         transcript_input = sample['transcript']['tokens']
         transcript_length = sample['transcript']['lengths']
         prev_transcript = sample['transcript']['prev_output_tokens']
         return_all_hidden = True if self.layer_mse else False
 
-        MT_embedding = self.MT_model.encoder(transcript_input, transcript_length, return_all_hiddens=return_all_hidden)
-
         ASR_output, ASR_extra = self.ASR_model(audio_input, audio_length, prev_transcript, features_only=True)
+        MT_embedding = self.MT_model.encoder(transcript_input, transcript_length,
+                                             return_all_hiddens=return_all_hidden)
+
         adapter_output = self.adapter(ASR_output, ASR_tokens=transcript_input, return_all_hiddens=return_all_hidden,
                                       glancing=self.glancing_training, step=kwargs.get("step", 0),
                                       max_step=self.max_step, token_mask=self.get_base_mask(transcript_input),
@@ -119,13 +141,25 @@ class PipelinedST(BaseFairseqModel):
         if self.hidden_embedding_loss == "mse":
             mask = transcript_input.ne(self.src_pad)
             key = 'encoder_states' if self.layer_mse else 'encoder_out'
-            layers = [i for i in range(len(adapter_output[key]))] if self.layer_mse else [0]
+            # layers = [i for i in range(len(MT_embedding[key]))] if self.layer_mse else [0]
+            layers = self.layers if self.layer_mse else [0]
+            diff = len(adapter_output[key]) - len(MT_embedding[key])
             for i in layers:
-                adapter = adapter_output[key][i].transpose(0, 1)
+                adapter = adapter_output[key][i + diff].transpose(0, 1)
                 MT_output = MT_embedding[key][i].transpose(0, 1)
                 loss["mse-" + str(i) + "-loss"] = {
-                    "loss": F.mse_loss(adapter[mask], MT_output[mask], reduction="none").sum(-1).mean()
+                    "loss": F.mse_loss(adapter[mask], MT_output[mask], reduction="none").sum()
                 }
+
+        if self.source_word_loss:
+            source_output = self.source_output(adapter_output['encoder_out'][0].transpose(0, 1))
+            loss["source_word_ins"] = {
+                "out": (source_output,),
+                "tgt": transcript_input,
+                "mask": transcript_input.ne(self.src_pad),
+                "ls": self.args.label_smoothing,
+                "nll_loss": False,
+            }
 
         if self.word_loss:
             MT_output = self.MT_model.decoder(prev_output_tokens, encoder_out=adapter_output,
@@ -145,7 +179,7 @@ class PipelinedST(BaseFairseqModel):
                 "tgt": sample['target'],
                 "mask": sample['target'].ne(self.tgt_pad),
                 "ls": self.args.label_smoothing,
-                "nll_loss": True,
+                "nll_loss": False,
             }
 
         return loss
@@ -169,4 +203,6 @@ def pipelined_st(args):
     args.ASR_path = getattr(args, "ASR_path", '')
     args.MT_path = getattr(args, "MT_path", '')
     args.freeze_NMT = getattr(args, "freeze_NMT", False)
+    args.freeze_NMT_encoder = getattr(args, "freeze_NMT_encoder", False)
+    args.freeze_ASR_encoder = getattr(args, "freeze_ASR_encoder", False)
     args.freeze_ASR = getattr(args, "freeze_ASR", False)

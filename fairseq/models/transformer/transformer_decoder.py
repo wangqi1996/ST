@@ -194,6 +194,8 @@ class TransformerDecoderBase(FairseqIncrementalDecoder):
             alignment_heads: Optional[int] = None,
             src_lengths: Optional[Any] = None,
             return_all_hiddens: bool = False,
+            token_embedding=None,
+            **kwargs
     ):
         """
         Args:
@@ -221,6 +223,8 @@ class TransformerDecoderBase(FairseqIncrementalDecoder):
             full_context_alignment=full_context_alignment,
             alignment_layer=alignment_layer,
             alignment_heads=alignment_heads,
+            token_embedding=token_embedding,
+            **kwargs
         )
 
         if not features_only:
@@ -235,6 +239,8 @@ class TransformerDecoderBase(FairseqIncrementalDecoder):
             full_context_alignment: bool = False,
             alignment_layer: Optional[int] = None,
             alignment_heads: Optional[int] = None,
+            token_embedding=None,
+            **kwargs
     ):
         return self.extract_features_scriptable(
             prev_output_tokens,
@@ -243,6 +249,7 @@ class TransformerDecoderBase(FairseqIncrementalDecoder):
             full_context_alignment,
             alignment_layer,
             alignment_heads,
+            token_embedding=None,
         )
 
     """
@@ -259,6 +266,9 @@ class TransformerDecoderBase(FairseqIncrementalDecoder):
             full_context_alignment: bool = False,
             alignment_layer: Optional[int] = None,
             alignment_heads: Optional[int] = None,
+            token_embedding=None,
+            no_self_attn_mask=False,
+            **kwargs
     ):
         """
         Similar to *forward* but only return features.
@@ -307,6 +317,8 @@ class TransformerDecoderBase(FairseqIncrementalDecoder):
 
         # embed tokens and positions
         x = self.embed_scale * self.embed_tokens(prev_output_tokens)
+        if token_embedding is not None:
+            x = token_embedding
 
         if self.quant_noise is not None:
             x = self.quant_noise(x)
@@ -336,6 +348,8 @@ class TransformerDecoderBase(FairseqIncrementalDecoder):
             if incremental_state is None and not full_context_alignment:
                 self_attn_mask = self.buffered_future_mask(x)
             else:
+                self_attn_mask = None
+            if no_self_attn_mask:
                 self_attn_mask = None
 
             x, layer_attn, _ = layer(

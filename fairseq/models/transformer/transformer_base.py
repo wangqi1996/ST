@@ -139,6 +139,7 @@ class TransformerModelBase(FairseqEncoderDecoderModel):
             alignment_layer: Optional[int] = None,
             alignment_heads: Optional[int] = None,
             src_embedding=None,
+            **kwargs
     ):
         """
         Run the forward pass for an encoder-decoder model.

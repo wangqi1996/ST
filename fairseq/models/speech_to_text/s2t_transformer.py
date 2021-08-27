@@ -2,11 +2,13 @@
 
 import logging
 import math
-from typing import Dict, List, Optional, Tuple
 from pathlib import Path
+from typing import Dict, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
+from torch import Tensor
+
 from fairseq import checkpoint_utils, utils
 from fairseq.data.data_utils import lengths_to_padding_mask
 from fairseq.models import (
@@ -22,8 +24,6 @@ from fairseq.modules import (
     PositionalEmbedding,
     TransformerEncoderLayer,
 )
-from torch import Tensor
-
 
 logger = logging.getLogger(__name__)
 
@@ -41,11 +41,11 @@ class Conv1dSubsampler(nn.Module):
     """
 
     def __init__(
-        self,
-        in_channels: int,
-        mid_channels: int,
-        out_channels: int,
-        kernel_sizes: List[int] = (3, 3),
+            self,
+            in_channels: int,
+            mid_channels: int,
+            out_channels: int,
+            kernel_sizes: List[int] = (3, 3),
     ):
         super(Conv1dSubsampler, self).__init__()
         self.n_layers = len(kernel_sizes)
@@ -248,17 +248,17 @@ class S2TTransformerModel(FairseqEncoderDecoderModel):
         return cls(encoder, decoder)
 
     def get_normalized_probs(
-        self,
-        net_output: Tuple[Tensor, Optional[Dict[str, List[Optional[Tensor]]]]],
-        log_probs: bool,
-        sample: Optional[Dict[str, Tensor]] = None,
+            self,
+            net_output: Tuple[Tensor, Optional[Dict[str, List[Optional[Tensor]]]]],
+            log_probs: bool,
+            sample: Optional[Dict[str, Tensor]] = None,
     ):
         # net_output['encoder_out'] is a (B, T, D) tensor
         lprobs = self.get_normalized_probs_scriptable(net_output, log_probs, sample)
         lprobs.batch_first = True
         return lprobs
 
-    def forward(self, src_tokens, src_lengths, prev_output_tokens, features_only=False):
+    def forward(self, src_tokens, src_lengths, prev_output_tokens, features_only=False, **kwargs):
         """
         The forward method inherited from the base class has a **kwargs
         argument in its input, which is not supported in torchscript. This
@@ -308,7 +308,7 @@ class S2TTransformerEncoder(FairseqEncoder):
         else:
             self.layer_norm = None
 
-    def _forward(self, src_tokens, src_lengths, return_all_hiddens=False):
+    def _forward(self, src_tokens, src_lengths, return_all_hiddens=False, **kwargs):
         x, input_lengths = self.subsample(src_tokens, src_lengths)
         x = self.embed_scale * x
 
@@ -329,7 +329,7 @@ class S2TTransformerEncoder(FairseqEncoder):
 
         return {
             "encoder_out": [x],  # T x B x C
-            "encoder_padding_mask": [encoder_padding_mask] if encoder_padding_mask.any() else [],  # B x T
+            "encoder_padding_mask": [encoder_padding_mask],  # B x T
             "encoder_embedding": [],  # B x T x C
             "encoder_states": encoder_states,  # List[T x B x C]
             "src_tokens": [],
@@ -340,10 +340,10 @@ class S2TTransformerEncoder(FairseqEncoder):
         if self.num_updates < self.encoder_freezing_updates:
             with torch.no_grad():
                 x = self._forward(src_tokens, src_lengths,
-                                  return_all_hiddens=return_all_hiddens)
+                                  return_all_hiddens=return_all_hiddens, **kwargs)
         else:
             x = self._forward(src_tokens, src_lengths,
-                              return_all_hiddens=return_all_hiddens)
+                              return_all_hiddens=return_all_hiddens, **kwargs)
         return x
 
     def reorder_encoder_out(self, encoder_out, new_order):
@@ -383,13 +383,15 @@ class S2TTransformerEncoder(FairseqEncoder):
 
 class TransformerDecoderScriptable(TransformerDecoder):
     def extract_features(
-        self,
-        prev_output_tokens,
-        encoder_out: Optional[Dict[str, List[Tensor]]] = None,
-        incremental_state: Optional[Dict[str, Dict[str, Optional[Tensor]]]] = None,
-        full_context_alignment: bool = False,
-        alignment_layer: Optional[int] = None,
-        alignment_heads: Optional[int] = None,
+            self,
+            prev_output_tokens,
+            encoder_out: Optional[Dict[str, List[Tensor]]] = None,
+            incremental_state: Optional[Dict[str, Dict[str, Optional[Tensor]]]] = None,
+            full_context_alignment: bool = False,
+            alignment_layer: Optional[int] = None,
+            alignment_heads: Optional[int] = None,
+            token_embedding=None,
+            **kwargs
     ):
         # call scriptable method from parent class
         x, _ = self.extract_features_scriptable(
@@ -399,6 +401,8 @@ class TransformerDecoderScriptable(TransformerDecoder):
             full_context_alignment,
             alignment_layer,
             alignment_heads,
+            token_embedding=token_embedding,
+            **kwargs
         )
         return x, None
 

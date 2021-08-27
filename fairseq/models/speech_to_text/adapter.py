@@ -31,13 +31,13 @@ def glancing_hidden(ASR_output, MT_embedding, transcripts, mask, step, max_step)
 
 
 def get_masked_ratio(step, max_step):
-    max_ratio = 0.5
-    min_ratio = 0.1
-    masked_ratio = 0.5 - step / max_step * (max_ratio - min_ratio)
+    max_ratio = 0.3
+    min_ratio = 0.0
+    masked_ratio = max_ratio - step / max_step * (max_ratio - min_ratio)
     return masked_ratio
 
 
-def load_pretrained_model(model_path, arg_overrides=None, freeze=False):
+def load_pretrained_model(model_path, arg_overrides=None, freeze=False, freeze_encoder=False):
     from fairseq.checkpoint_utils import (
         load_checkpoint_to_cpu, convert_namespace_to_omegaconf
     )
@@ -65,6 +65,10 @@ def load_pretrained_model(model_path, arg_overrides=None, freeze=False):
     # freeze parameters
     if freeze:
         for param in model.parameters():
+            param.requires_grad = False
+
+    if freeze_encoder:
+        for param in model.encoder.parameters():
             param.requires_grad = False
 
     return task, model, cfg
@@ -133,26 +137,36 @@ class TransformerAdapter(_Adapter):
             qn_block_size=8
         )
 
-    def __init__(self, ASR_dim, MT_dim, pad, MT_cfg, src_dict, embed_tokens):
+    def __init__(self, ASR_dim, MT_dim, pad, MT_cfg, src_dict, embed_tokens, deep_adapter=False, using_attention=False):
         super(TransformerAdapter, self).__init__()
-        self.Linear = self.build_attention(ASR_dim, MT_dim)
+        self.using_attention = using_attention
+        if using_attention:
+            self.Linear = self.build_attention(ASR_dim, MT_dim)
+        else:
+            self.Linear = nn.Linear(ASR_dim, MT_dim)
 
-        self.transformer = TransformerEncoderBase(TransformerConfig.from_namespace(MT_cfg), src_dict, embed_tokens)
+        cfg = TransformerConfig.from_namespace(MT_cfg)
+        if deep_adapter:
+            cfg.encoder.layers = cfg.encoder.layers * 2
+        self.transformer = TransformerEncoderBase(cfg, src_dict, embed_tokens)
         self.pad = pad
 
     def forward(self, ASR_output, ASR_tokens=None, return_all_hiddens=False, glancing=False, **kwargs):
-        key = ASR_output.transpose(0, 1)  # [seq_len, batch_size, dim]
-        x_mask = ASR_tokens.eq(self.pad)
-        query = self.transformer.embed_positions(ASR_tokens).transpose(0, 1)
-        x, _ = self.Linear(query, key, key, key_padding_mask=x_mask, need_weights=False)
+        if self.using_attention:
+            key = ASR_output.transpose(0, 1)  # [seq_len, batch_size, 256]
+            x_mask = ASR_tokens.eq(self.pad)
+            query = self.transformer.embed_positions(ASR_tokens).transpose(0, 1)  # [512]
+            x, _ = self.Linear(query, key, key, key_padding_mask=x_mask, need_weights=False).transpose(0, 1)
+        else:
+            x = self.Linear(ASR_output)
         if self.training and glancing:
             token_mask = kwargs['token_mask']
             step, max_step = kwargs.get('step', 0), kwargs.get('max_step', 1)
-            x = glancing_hidden(ASR_output=x.transpose(0, 1), MT_embedding=kwargs['src_embedding'],
+            x = glancing_hidden(ASR_output=x, MT_embedding=kwargs['src_embedding'],
                                 transcripts=ASR_tokens, mask=token_mask,
-                                step=step, max_step=max_step).transpose(0, 1)
+                                step=step, max_step=max_step)
 
-        x = self.transformer(ASR_tokens, ASR_tokens.ne(self.pad).long().sum(-1), token_embeddings=x.transpose(0, 1),
+        x = self.transformer(ASR_tokens, ASR_tokens.ne(self.pad).long().sum(-1), token_embeddings=x,
                              return_all_hiddens=return_all_hiddens)
         return x
 
