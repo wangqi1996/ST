@@ -11,6 +11,15 @@ from fairseq.models import (
 )
 from .adapter import load_pretrained_model, TransformerAdapter
 
+
+def normal_(data):
+    # with FSDP, module params will be on CUDA, so we cast them back to CPU
+    # so that the RNG is consistent with and without FSDP
+    data.copy_(
+        data.cpu().normal_(mean=0.0, std=0.02).to(data.device)
+    )
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -33,16 +42,21 @@ class PipelinedST(BaseFairseqModel):
         self.src_bos = self.task.source_dictionary.bos()
         self.tgt_pad = self.task.target_dictionary.pad()
 
-        deep_adapter = getattr(args, "deep_adapter", False)
-        self.adapter = self.build_adapter(deep_adapter=deep_adapter)
+        self.adapter = self.build_adapter(deep_adapter=False)
 
         self.hidden_embedding_loss = args.hidden_embedding_loss
+
         self.word_loss = getattr(args, "word_loss", False)
         self.layer_mse = getattr(args, "layer_mse", False)
         self.MT_loss = getattr(args, "MT_loss", False)
         self.source_word_loss = getattr(args, "source_word_loss", False)
+
+        self.kl_1 = getattr(args, "kl_1", False)
+        self.kl_2 = getattr(args, "kl_2", False)
+
         if self.source_word_loss:
             self.source_output = nn.Linear(self.MT_model.encoder.embed_dim, len(self.task.source_dictionary))
+
         if self.MT_loss:
             assert not args.freeze_NMT or self.share_adapter
 
@@ -59,14 +73,15 @@ class PipelinedST(BaseFairseqModel):
                                      src_dict=self.task.source_dictionary,
                                      embed_tokens=self.MT_model.encoder.embed_tokens,
                                      deep_adapter=deep_adapter)
-        # adapter = MLPAdapter(self.ASR_model.decoder.embed_dim, self.MT_model.encoder.embed_dim)
 
         init_adapter = getattr(self.args, "init_adapter", False)
         if init_adapter:
+            logger.info("init the adapter with MT model encoder")
             adapter.init(self.MT_model.encoder.state_dict())
 
         self.share_adapter = getattr(self.args, "share_adapter", False)
         if self.share_adapter:
+            logger.info("share the adapter with MT model encoder")
             adapter.share(self.MT_model.encoder)
         return adapter
 
@@ -91,10 +106,12 @@ class PipelinedST(BaseFairseqModel):
         # 1. no freeze NMT   2. share adapter and MT encoder
         parser.add_argument('--layer-mse', action="store_true")
         parser.add_argument('--layers', type=str, default="")  # 5,6
+        parser.add_argument('--kl-1', action="store_true")
+        parser.add_argument('--kl-2', action="store_true")
+        parser.add_argument('--kl1-weight', type=int, default=1)
+        parser.add_argument('--kl2-weight', type=int, default=1)
 
         parser.add_argument('--glancing-training', action="store_true")  # Adapter, MT
-
-        parser.add_argument('--deep-adapter', action="store_true")
 
     def get_ASR_model(self):
         return self.ASR_model
@@ -150,6 +167,28 @@ class PipelinedST(BaseFairseqModel):
                 loss["mse-" + str(i) + "-loss"] = {
                     "loss": F.mse_loss(adapter[mask], MT_output[mask], reduction="none").sum()
                 }
+
+        if self.kl_1:
+            adapter = adapter_output['encoder_out'][0].transpose(0, 1)
+            mt_encoder = MT_embedding['encoder_out'][0].transpose(0, 1)
+            loss["kl1-loss"] = {
+                "loss": F.kl_div(F.log_softmax(adapter, dim=-1),
+                                 F.softmax(mt_encoder, dim=-1).detach(),
+                                 reduction="sum") * self.args.kl1_weight
+            }
+
+        if self.kl_2:
+            # 随机初始化一个W
+            W = torch.zeros((self.MT_model.encoder.embed_dim, len(self.task.source_dictionary)))
+            normal_(W)
+            W = W.to(ASR_output.device)
+            W_adapter = adapter_output['encoder_out'][0].transpose(0, 1) @ W
+            W_mt_encoder = MT_embedding['encoder_out'][0].transpose(0, 1) @ W
+            loss["kl2-loss"] = {
+                "loss": F.kl_div(F.log_softmax(W_adapter, dim=-1),
+                                 F.softmax(W_mt_encoder, dim=-1).detach(),
+                                 reduction="sum") * self.args.kl2_weight
+            }
 
         if self.source_word_loss:
             source_output = self.source_output(adapter_output['encoder_out'][0].transpose(0, 1))

@@ -52,7 +52,7 @@ class STCriterion(LabelSmoothedCrossEntropyCriterion):
             "sample_size": sample_size,
         }
 
-        if self.report_accuracy:
+        if self.report_accuracy and "word_out" in outputs:
             n_correct, total = self.compute_accuracy(model, outputs['word_out'], sample)
             logging_output["n_correct"] = utils.item(n_correct.data)
             logging_output["total"] = utils.item(total.data)

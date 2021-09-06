@@ -12,6 +12,24 @@ from fairseq.utils import new_arange
 logger = logging.getLogger(__name__)
 
 
+def get_loss_name(args):
+    result = {}
+    _sum = 0
+    if args.ST_loss:
+        result['ST'] = _sum
+        _sum += 1
+    if args.ASR_loss:
+        result['ASR'] = _sum
+        _sum += 1
+    if args.MT_loss:
+        result['MT'] = _sum
+        _sum += 1
+    if args.DAE_loss:
+        result['DAE'] = _sum
+        _sum += 1
+    return result, _sum
+
+
 def _random_mask(target_tokens, tgt_dict, masked_ratio=0.15):
     pad = tgt_dict.pad()
     bos = tgt_dict.bos()
@@ -48,6 +66,7 @@ class ST_Join(S2TTransformerModel):
             self.encoder.apply(init_bert_params)
         if args.init_decoder:
             self.decoder.apply(init_bert_params)
+        self.loss_flag, self.loss_flag_sum = get_loss_name(args)
 
     @classmethod
     def build_model(cls, args, task):
@@ -74,7 +93,7 @@ class ST_Join(S2TTransformerModel):
         parser.add_argument('--init-decoder', action="store_true")
         parser.add_argument('--init-encoder', action="store_true")
 
-    def forward(self, src_tokens, src_lengths, prev_output_tokens, features_only=False, sample=None, **kwargs):
+    def forward(self, src_tokens, src_lengths, prev_output_tokens, features_only=False, sample=None, step=-1, **kwargs):
         transcript_input = sample['transcript']['tokens']
         transcript_length = sample['transcript']['lengths']
         prev_transcript = sample['transcript']['prev_output_tokens']
@@ -82,7 +101,7 @@ class ST_Join(S2TTransformerModel):
 
         loss = {}
         encoder_out = None
-        if self.args.ST_loss:
+        if self.args.ST_loss and step % self.loss_flag_sum == self.loss_flag['ST']:
             encoder_out = self.encoder(src_tokens=src_tokens, src_lengths=src_lengths)
             decoder_out = self.decoder(prev_output_tokens=prev_output_tokens, encoder_out=encoder_out)
             loss['ST'] = {
@@ -94,7 +113,7 @@ class ST_Join(S2TTransformerModel):
             }
             loss['word_out'] = decoder_out
 
-        if self.args.MT_loss:
+        if self.args.MT_loss and step % self.loss_flag_sum == self.loss_flag['MT']:
             MT_encoder_out = self.MT_encoder(src_tokens=transcript_input, src_lengths=transcript_length)
             MT_decoder_out = self.decoder(prev_output_tokens=prev_output_tokens, encoder_out=MT_encoder_out)
             loss['MT'] = {
@@ -104,7 +123,7 @@ class ST_Join(S2TTransformerModel):
                 "ls": self.args.label_smoothing
             }
 
-        if self.args.ASR_loss:
+        if self.args.ASR_loss and step % self.loss_flag_sum == self.loss_flag['ASR']:
             if not encoder_out:
                 encoder_out = self.encoder(src_tokens=src_tokens, src_lengths=src_lengths)
             ASR_decoder_out = self.ASR_decoder(prev_output_tokens=prev_transcript, encoder_out=encoder_out)
@@ -115,7 +134,7 @@ class ST_Join(S2TTransformerModel):
                 "ls": self.args.label_smoothing
             }
 
-        if self.args.DAE_loss:
+        if self.args.DAE_loss and step % self.loss_flag_sum == self.loss_flag['DAE']:
             mask_transcript = _random_mask(transcript_input, self.task.target_dictionary)
             DAE_encoder_out = self.MT_encoder(src_tokens=mask_transcript, src_lengths=transcript_length)
             DAE_decoder_out = self.ASR_decoder(prev_output_tokens=prev_transcript, encoder_out=DAE_encoder_out)
