@@ -1,4 +1,5 @@
 import logging
+import random
 
 import torch
 import torch.nn.functional as F
@@ -179,8 +180,9 @@ class PipelinedST(BaseFairseqModel):
 
         if self.kl_2:
             # 随机初始化一个W
-            W = torch.zeros((self.MT_model.encoder.embed_dim, len(self.task.source_dictionary)))
-            normal_(W)
+            class_num = random.randint(100, self.MT_model.encoder.embed_dim)
+            W = torch.zeros((self.MT_model.encoder.embed_dim, class_num))
+            W.copy_(W.cpu().normal_(mean=0.0, std=5).to(W.device))
             W = W.to(ASR_output.device)
             W_adapter = adapter_output['encoder_out'][0].transpose(0, 1) @ W
             W_mt_encoder = MT_embedding['encoder_out'][0].transpose(0, 1) @ W

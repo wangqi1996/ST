@@ -1,0 +1,55 @@
+common:
+  log_format: simple
+  log_interval: 500
+
+#task:
+#  _name: speech_transcript_to_text
+#  data: /home/data_ti6_c/wangdq/data/ST/ende/ST
+#  config_yaml: /home/data_ti5_c/wangdq/code/st/config/ende/st.yaml
+#  eval_bleu: True
+#  eval_bleu_detok: moses
+#  eval_bleu_remove_bpe: True
+#  eval_bleu_args: '{"beam": 5 }'
+#
+#
+#dataset:
+#  max_tokens: 8000
+#  skip_invalid_size_inputs_valid_test: true
+#  valid_subset: dev
+#  batch_size_valid: 32
+#
+#
+#model:
+#  _name: pipelined_st
+#  ASR_config: /home/data_ti5_c/wangdq/code/st/config/ende/asr.yaml
+#  ASR_path: /home/data_ti6_c/wangdq/model/ST/ende/ASR.pt
+#  MT_path: /home/data_ti6_c/wangdq/model/ST/ende/MT.pt
+#  freeze_ASR: True
+#  freeze_NMT: True
+#  hidden_embedding_loss: mse
+#  word_loss: True
+#
+#optimization:
+#  max_update: 100000
+#  clip_norm: 5.0
+#  lr: [ 5e-4 ]
+#
+#optimizer:
+#  _name: adam
+#    weight_decay: 0.0001
+#
+#lr_scheduler:
+#  _name: inverse_sqrt
+#  warmup_updates: 4000
+#
+#checkpoint:
+#  save_interval_updates: 10000
+#  keep_interval_updates: 1
+#  no_epoch_checkpoints: true
+#  keep_best_checkpoints: 5
+#  best_checkpoint_metric: bleu
+#  maximize_best_checkpoint_metric: true
+#  save_dir: /home/wangdq/save/ST/Linear/
+#
+#criterion:
+#  _name: st_loss
