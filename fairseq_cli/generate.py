@@ -134,6 +134,7 @@ def _main(cfg: DictConfig, output_file):
         if use_cuda and not cfg.distributed_training.pipeline_model_parallel:
             model.cuda()
         model.prepare_for_inference_(cfg)
+        logger.info(model)
 
     # Load alignment dictionary for unknown word replacement
     # (None if no unknown word replacement, empty if no path to align dictionary)

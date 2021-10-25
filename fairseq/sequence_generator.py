@@ -765,8 +765,6 @@ class EnsembleModel(nn.Module):
 
     @torch.jit.export
     def forward_encoder(self, net_input: Dict[str, Tensor], **kwargs):
-        if not self.has_encoder():
-            return [model.forward_encoder(net_input, **kwargs) for model in self.models]
         return [model.forward_encoder(net_input, **kwargs) for model in self.models]
 
     @torch.jit.export
@@ -781,8 +779,8 @@ class EnsembleModel(nn.Module):
         avg_attn: Optional[Tensor] = None
         encoder_out: Optional[Dict[str, List[Tensor]]] = None
         for i, model in enumerate(self.models):
-            if self.has_encoder():
-                encoder_out = encoder_outs[i]
+            # if self.has_encoder():
+            encoder_out = encoder_outs[i]
             # decode each model
             if self.has_incremental_states():
                 decoder_out = model.decoder.forward(
@@ -794,7 +792,8 @@ class EnsembleModel(nn.Module):
                 if hasattr(model, "decoder"):
                     decoder_out = model.decoder.forward(tokens, encoder_out=encoder_out)
                 else:
-                    decoder_out = model.forward(tokens)
+                    decoder_out = model.forward_decoder(tokens, encoder_out=encoder_out,
+                                                        incremental_states=incremental_states[i])
 
             attn: Optional[Tensor] = None
             decoder_len = len(decoder_out)
@@ -852,13 +851,16 @@ class EnsembleModel(nn.Module):
             *encoder_out* rearranged according to *new_order*
         """
         new_outs: List[Dict[str, List[Tensor]]] = []
-        if not self.has_encoder():
-            return new_outs
         for i, model in enumerate(self.models):
             assert encoder_outs is not None
-            new_outs.append(
-                model.encoder.reorder_encoder_out(encoder_outs[i], new_order)
-            )
+            if model.has_encoder():
+                new_outs.append(
+                    model.encoder.reorder_encoder_out(encoder_outs[i], new_order)
+                )
+            else:
+                new_outs.append(
+                    model.reorder_encoder_out(encoder_outs[i], new_order)
+                )
         return new_outs
 
     @torch.jit.export
@@ -870,9 +872,14 @@ class EnsembleModel(nn.Module):
         if not self.has_incremental_states():
             return
         for i, model in enumerate(self.models):
-            model.decoder.reorder_incremental_state_scripting(
-                incremental_states[i], new_order
-            )
+            if model.has_decoder():
+                model.decoder.reorder_incremental_state_scripting(
+                    incremental_states[i], new_order
+                )
+            else:
+                model.reorder_incremental_state_scripting(
+                    incremental_states[i], new_order
+                )
 
 
 class SequenceGeneratorWithAlignment(SequenceGenerator):

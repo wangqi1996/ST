@@ -1,40 +1,13 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
+from fairseq import utils
+from fairseq.models.nat.nonautoregressive_transformer import _mean_pooling
 from fairseq.models.transformer import (
-    TransformerEncoderBase, TransformerConfig
+    TransformerEncoderBase, TransformerConfig, Embedding
 )
 from fairseq.modules import MultiheadAttention
-from fairseq.utils import new_arange
-
-
-def get_random_mask(mask_length, tokens, mask):
-    score = tokens.clone().float().uniform_()
-    score.masked_fill_(~mask, 2.0)
-    _, rank = score.sort(1)
-    cutoff = new_arange(rank) < mask_length[:, None].long()
-    mask = cutoff.scatter(1, rank, cutoff)  # [b, l]
-    return mask
-
-
-def glancing_hidden(ASR_output, MT_embedding, transcripts, mask, step, max_step):
-    length = mask.long().sum(-1)
-    masked_ratio = get_masked_ratio(step, max_step)
-    mask_length = masked_ratio * length
-    mask = get_random_mask(mask_length, transcripts, mask)
-
-    non_mask = ~mask
-    full_mask = torch.cat((non_mask.unsqueeze(-1), mask.unsqueeze(-1)), dim=-1)
-    full_embedding = torch.cat((ASR_output.unsqueeze(-1), MT_embedding.unsqueeze(-1)), dim=-1)
-    output_emebdding = (full_embedding * full_mask.unsqueeze(-2)).sum(-1)
-    return output_emebdding
-
-
-def get_masked_ratio(step, max_step):
-    max_ratio = 0.3
-    min_ratio = 0.0
-    masked_ratio = max_ratio - step / max_step * (max_ratio - min_ratio)
-    return masked_ratio
 
 
 def load_pretrained_model(model_path, arg_overrides=None, freeze=False, freeze_encoder=False):
@@ -88,92 +61,94 @@ class _Adapter(torch.nn.Module):
         pass
 
 
-class LinearAdapter(_Adapter):
-    def __init__(self, ASR_dim, MT_dim):
-        super(LinearAdapter, self).__init__()
-        self.Linear = nn.Linear(ASR_dim, MT_dim)
+class LengthPredictor(nn.Module):
 
-    def forward(self, ASR_output, **kwargs):
-        return self.Linear(ASR_output)
+    def __init__(self, pad, dim):
+        super().__init__()
+        self.padding_idx = pad
+        self.embed_length = Embedding(256, dim, None)
 
+    def forward(self, normalize, encoder_out, encoder_padding_mask):
+        enc_feats = encoder_out  # T x B x C
+        src_masks = encoder_padding_mask
+        enc_feats = _mean_pooling(enc_feats, src_masks)
+        length_out = F.linear(enc_feats, self.embed_length.weight)
+        return F.log_softmax(length_out, -1) if normalize else length_out
 
-class MLPAdapter(_Adapter):
-    def __init__(self, ASR_dim, MT_dim):
-        super(MLPAdapter, self).__init__()
-        self.MLP = nn.Sequential(
-            nn.Linear(ASR_dim, ASR_dim * 4),
-            nn.Tanh(),
-            nn.Dropout(0.2),
-            nn.Linear(ASR_dim * 4, MT_dim)
+    def get_target(self, encoder_out, encoder_padding_mask, tgt_tokens=None, length_out=None):
+        enc_feats = encoder_out # T x B x C
+        src_masks = encoder_padding_mask  # B x T
+        src_lengs = (~src_masks).transpose(0, 1).type_as(enc_feats).sum(0).long()
+
+        if tgt_tokens is not None:
+            # obtain the length target
+            tgt_lengs = tgt_tokens.ne(self.padding_idx).sum(1).long()
+            length_tgt = tgt_lengs - src_lengs + 128
+            length_tgt = length_tgt.clamp(min=0, max=255)
+
+        else:
+            pred_lengs = length_out.max(-1)[1]
+            length_tgt = pred_lengs - 128 + src_lengs
+
+        return length_tgt
+
+    def initialize_output_tokens(self, encoder_out, encoder_padding_mask, src_tokens):
+        # length prediction
+        length_tgt = self.get_target(
+            encoder_out=encoder_out,
+            encoder_padding_mask = encoder_padding_mask,
+            length_out=self.forward(True, encoder_out, encoder_padding_mask),
         )
 
-    def forward(self, ASR_output, ASR_tokens=None, src_pad=1, **kwargs):
-        adapter_output = self.MLP(ASR_output).transpose(0, 1)
-        encoder_padding_mask = ASR_tokens.eq(src_pad)
-        return {
-            "encoder_out": [adapter_output],  # T x B x C
-            "encoder_padding_mask": [encoder_padding_mask],  # B x T
-            "encoder_embedding": [],  # B x T x C
-            "encoder_states": [],  # List[T x B x C]
-            "src_tokens": [],
-            "src_lengths": [],
-        }
+        max_length = length_tgt.clamp_(min=2).max()
+        idx_length = utils.new_arange(src_tokens, max_length)
 
+        initial_output_tokens = src_tokens.new_zeros(
+            src_tokens.size(0), max_length
+        ).fill_(self.padding_idx)
+        initial_output_tokens.masked_fill_(
+            idx_length[None, :] < length_tgt[:, None], self.padding_idx+1
+        )
+        initial_output_tokens[:, 0] = self.padding_idx+1
+        initial_output_tokens.scatter_(1, length_tgt[:, None] - 1, self.padding_idx+1)
+
+        return initial_output_tokens
+
+
+def build_attention(dim):
+    return MultiheadAttention(
+        embed_dim=dim, num_heads=1, kdim=dim, vdim=dim, dropout=0.1,
+        bias=True, add_bias_kv=False, add_zero_attn=False, self_attention=False, encoder_decoder_attention=True,
+        q_noise=0.0, qn_block_size=8
+    )
 
 class TransformerAdapter(_Adapter):
-    def build_attention(self, ASR_dim, MT_dim):
-        return MultiheadAttention(
-            embed_dim=MT_dim,
-            num_heads=2,
-            kdim=ASR_dim,
-            vdim=ASR_dim,
-            dropout=0.1,
-            bias=True,
-            add_bias_kv=False,
-            add_zero_attn=False,
-            self_attention=False,
-            encoder_decoder_attention=True,
-            q_noise=0.0,
-            qn_block_size=8
-        )
 
-    def __init__(self, ASR_dim, MT_dim, pad, MT_cfg, src_dict, embed_tokens, deep_adapter=False, using_attention=False):
+    def __init__(self, dim, MT_cfg, src_dict, embed_tokens, pad, use_attention=False):
         super(TransformerAdapter, self).__init__()
-        self.using_attention = using_attention
-        if using_attention:
-            self.Linear = self.build_attention(ASR_dim, MT_dim)
+        if use_attention:
+            self.Linear = build_attention(dim)
         else:
-            self.Linear = nn.Linear(ASR_dim, MT_dim)
+            self.Linear = None
 
         cfg = TransformerConfig.from_namespace(MT_cfg)
-        if deep_adapter:
-            cfg.encoder.layers = cfg.encoder.layers * 2
         self.transformer = TransformerEncoderBase(cfg, src_dict, embed_tokens)
         self.pad = pad
 
-    def forward(self, ASR_output, ASR_tokens=None, return_all_hiddens=False, glancing=False, **kwargs):
-        if self.using_attention:
-            key = ASR_output.transpose(0, 1)  # [seq_len, batch_size, 256]
-            x_mask = ASR_tokens.eq(self.pad)
-            query = self.transformer.embed_positions(ASR_tokens).transpose(0, 1)  # [512]
-            x, _ = self.Linear(query, key, key, key_padding_mask=x_mask, need_weights=False).transpose(0, 1)
-        else:
-            x = self.Linear(ASR_output)
-        if self.training and glancing:
-            token_mask = kwargs['token_mask']
-            step, max_step = kwargs.get('step', 0), kwargs.get('max_step', 1)
-            x = glancing_hidden(ASR_output=x, MT_embedding=kwargs['src_embedding'],
-                                transcripts=ASR_tokens, mask=token_mask,
-                                step=step, max_step=max_step)
-
-        x = self.transformer(ASR_tokens, ASR_tokens.ne(self.pad).long().sum(-1), token_embeddings=x,
-                             return_all_hiddens=return_all_hiddens)
+    def forward(self, ASR_output, adapter_input=None, transcript=None, **kwargs):
+        # if self.Linear is not None:
+        #     key = ASR_output.transpose(0, 1)  # [seq_len, batch_size, 256]
+        #     x_mask = adapter_input.eq(self.pad)
+        #     query = self.transformer.embed_positions(transcript)  # [512]
+        #     x, _ = self.Linear(query.transpose(0, 1), key, key, key_padding_mask=x_mask, need_weights=False)
+        #     x = x.transpose(0, 1)
+        # else:
+        #     x = ASR_output
+        # if ASR_output.size(0) > 500:
+        #     from fairseq import pdb
+        #     pdb.set_trace()
+        x = self.transformer(transcript, transcript.ne(self.pad).long().sum(-1), token_embeddings=ASR_output,
+                             return_all_hiddens=False)
         return x
 
-    def init(self, state_dict):
-        self.transformer.load_state_dict(state_dict, strict=True)
 
-    def share(self, module):
-        self.transformer = module
-        for param in self.transformer.parameters():
-            param.requires_grad = True

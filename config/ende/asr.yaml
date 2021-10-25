@@ -1,6 +1,6 @@
 bpe_tokenizer:
   bpe: sentencepiece
-  sentencepiece_model: /home/data_ti6_c/wangdq/data/ST/ende/asr_vocab.model
+  sentencepiece_model: /home/data_ti6_c/wangdq/ST/middle/ende/asr.model
 input_channels: 1
 input_feat_per_channel: 80
 sampling_alpha: 1.0
@@ -17,5 +17,5 @@ transforms:
   _train:
     - utterance_cmvn
     - specaugment
-vocab_filename: /home/data_ti6_c/wangdq/data/ST/ende/asr_vocab.txt
+vocab_filename: /home/data_ti6_c/wangdq/ST/middle/ende/asr.txt
 

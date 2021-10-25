@@ -340,6 +340,12 @@ class FairseqEncoderDecoderModel(BaseFairseqModel):
         )
         return features
 
+    def has_encoder(self):
+        return getattr(self, "encoder", None) is not None
+
+    def has_decoder(self):
+        return getattr(self, "encoder", None) is not None
+
     def output_layer(self, features, **kwargs):
         """Project features to the default output size (typically vocabulary size)."""
         return self.decoder.output_layer(features, **kwargs)

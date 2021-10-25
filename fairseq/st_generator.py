@@ -79,7 +79,7 @@ class STGenerator(nn.Module):
     def generate(self, models, sample: Dict[str, Dict[str, Tensor]], **kwargs):
         # ASR_sample = self.construct_asr_sample(sample)
         # ASR_hypos = self.ASR_generator.generate(models, ASR_sample, **kwargs)
-
+        #
         # prev_output_tokens, output_tokens = self.construct_ASR_output(ASR_hypos)
         output_tokens, prev_output_tokens = sample['asr_output']['tokens'], sample['asr_output']['prev_output_tokens']
         # output_tokens, prev_output_tokens = sample['transcript']['tokens'], sample['transcript']['prev_output_tokens']

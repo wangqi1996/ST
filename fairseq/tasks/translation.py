@@ -28,36 +28,119 @@ from fairseq.data import (
 from fairseq.data.indexed_dataset import get_available_dataset_impl
 from fairseq.dataclass import ChoiceEnum, FairseqDataclass
 from fairseq.tasks import FairseqTask, register_task
-
+from fairseq.utils import new_arange
 
 EVAL_BLEU_ORDER = 4
-
 
 logger = logging.getLogger(__name__)
 
 
+def inject_noise(target_tokens, noise, tgt_dict):
+    def _random_delete(target_tokens):
+        pad = tgt_dict.pad()
+        bos = tgt_dict.bos()
+        eos = tgt_dict.eos()
+
+        max_len = target_tokens.size(1)
+        target_mask = target_tokens.eq(pad)
+        target_score = target_tokens.clone().float().uniform_()
+        target_score.masked_fill_(
+            target_tokens.eq(bos) | target_tokens.eq(eos), 0.0
+        )
+        target_score.masked_fill_(target_mask, 1)
+        target_score, target_rank = target_score.sort(1)
+        target_length = target_mask.size(1) - target_mask.float().sum(
+            1, keepdim=True
+        )
+
+        # do not delete <bos> and <eos> (we assign 0 score for them)
+        target_cutoff = (
+                2
+                + (
+                        (target_length - 2)
+                        * target_score.new_zeros(target_score.size(0), 1).uniform_()
+                ).long()
+        )
+        target_cutoff = target_score.sort(1)[1] >= target_cutoff
+
+        prev_target_tokens = (
+            target_tokens.gather(1, target_rank)
+                .masked_fill_(target_cutoff, pad)
+                .gather(1, target_rank.masked_fill_(target_cutoff, max_len).sort(1)[1])
+        )
+        prev_target_tokens = prev_target_tokens[
+                             :, : prev_target_tokens.ne(pad).sum(1).max()
+                             ]
+
+        return prev_target_tokens
+
+    def _random_mask(target_tokens):
+        pad = tgt_dict.pad()
+        bos = tgt_dict.bos()
+        eos = tgt_dict.eos()
+        unk = tgt_dict.unk()
+
+        target_masks = (
+                target_tokens.ne(pad) & target_tokens.ne(bos) & target_tokens.ne(eos)
+        )
+        target_score = target_tokens.clone().float().uniform_()
+        target_score.masked_fill_(~target_masks, 2.0)
+        target_length = target_masks.sum(1).float()
+        target_length = target_length * target_length.clone().uniform_()
+        target_length = target_length + 1  # make sure to mask at least one token.
+
+        _, target_rank = target_score.sort(1)
+        target_cutoff = new_arange(target_rank) < target_length[:, None].long()
+        prev_target_tokens = target_tokens.masked_fill(
+            target_cutoff.scatter(1, target_rank, target_cutoff), unk
+        )
+        return prev_target_tokens
+
+    def _full_mask(target_tokens):
+        pad = tgt_dict.pad()
+        bos = tgt_dict.bos()
+        eos = tgt_dict.eos()
+        unk = tgt_dict.unk()
+
+        target_mask = (
+                target_tokens.eq(bos) | target_tokens.eq(eos) | target_tokens.eq(pad)
+        )
+        return target_tokens.masked_fill(~target_mask, unk)
+
+    if noise == "random_delete":
+        return _random_delete(target_tokens)
+    elif noise == "random_mask":
+        return _random_mask(target_tokens)
+    elif noise == "full_mask":
+        return _full_mask(target_tokens)
+    elif noise == "no_noise":
+        return target_tokens
+    else:
+        raise NotImplementedError
+
+
 def load_langpair_dataset(
-    data_path,
-    split,
-    src,
-    src_dict,
-    tgt,
-    tgt_dict,
-    combine,
-    dataset_impl,
-    upsample_primary,
-    left_pad_source,
-    left_pad_target,
-    max_source_positions,
-    max_target_positions,
-    prepend_bos=False,
-    load_alignments=False,
-    truncate_source=False,
-    append_source_id=False,
-    num_buckets=0,
-    shuffle=True,
-    pad_to_multiple=1,
-    prepend_bos_src=None,
+        data_path,
+        split,
+        src,
+        src_dict,
+        tgt,
+        tgt_dict,
+        combine,
+        dataset_impl,
+        upsample_primary,
+        left_pad_source,
+        left_pad_target,
+        max_source_positions,
+        max_target_positions,
+        prepend_bos=False,
+        load_alignments=False,
+        truncate_source=False,
+        append_source_id=False,
+        num_buckets=0,
+        shuffle=True,
+        pad_to_multiple=1,
+        prepend_bos_src=None,
 ):
     def split_exists(split, src, tgt, lang, data_path):
         filename = os.path.join(data_path, "{}.{}-{}.{}".format(split, src, tgt, lang))
@@ -176,8 +259,8 @@ class TranslationConfig(FairseqDataclass):
         default=None,
         metadata={
             "help": "colon separated path to data directories list, will be iterated upon during epochs "
-            "in round-robin manner; however, valid and test data are always in the first directory "
-            "to avoid the need for repeating them in all directories"
+                    "in round-robin manner; however, valid and test data are always in the first directory "
+                    "to avoid the need for repeating them in all directories"
         },
     )
     source_lang: Optional[str] = field(
@@ -219,7 +302,7 @@ class TranslationConfig(FairseqDataclass):
         default=0,
         metadata={
             "help": "if >0, then bucket source and target lengths into "
-            "N buckets and pad accordingly; this is useful on TPUs to minimize the number of compilations"
+                    "N buckets and pad accordingly; this is useful on TPUs to minimize the number of compilations"
         },
     )
     train_subset: str = II("dataset.train_subset")
@@ -242,7 +325,7 @@ class TranslationConfig(FairseqDataclass):
         default="space",
         metadata={
             "help": "detokenize before computing BLEU (e.g., 'moses'); required if using --eval-bleu; "
-            "use 'space' to disable detokenization; see fairseq.data.encoders for other options"
+                    "use 'space' to disable detokenization; see fairseq.data.encoders for other options"
         },
     )
     eval_bleu_detok_args: Optional[str] = field(
@@ -261,6 +344,11 @@ class TranslationConfig(FairseqDataclass):
     )
     eval_bleu_print_samples: bool = field(
         default=False, metadata={"help": "print sample generations during validation"}
+    )
+
+    # 给源端加噪音
+    src_noise: str = field(
+        default=""
     )
 
 

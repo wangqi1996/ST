@@ -4,9 +4,9 @@
 # LICENSE file in the root directory of this source tree.
 
 import math
-from dataclasses import dataclass, field
 
 import torch
+from dataclasses import dataclass, field
 from omegaconf import II
 
 from fairseq import metrics, utils
@@ -68,6 +68,7 @@ class LabelSmoothedCrossEntropyCriterion(FairseqCriterion):
         self.eps = label_smoothing
         self.ignore_prefix_size = ignore_prefix_size
         self.report_accuracy = report_accuracy
+
 
     def forward(self, model, sample, reduce=True, **kwargs):
         """Compute the loss for the given sample.

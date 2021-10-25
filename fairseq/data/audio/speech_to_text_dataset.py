@@ -40,6 +40,7 @@ class S2TDataConfig(object):
 
     def __init__(self, yaml_path: Path):
         self.tgt_field = None
+        self.src_field = None
         try:
             import yaml
         except ImportError:
@@ -535,18 +536,43 @@ class SpeechToTextDatasetCreator(object):
             src_bpe_tokenizer=None
     ) -> SpeechToTextDataset:
         audio_root = Path(cfg.audio_root)
-        ids = [s[cls.KEY_ID] for s in samples]
-        audio_paths = [(audio_root / s[cls.KEY_AUDIO]).as_posix() for s in samples]
-        n_frames = [int(s[cls.KEY_N_FRAMES]) for s in samples]
-        tgt_texts = [s[tgt_field] for s in samples]
-        src_texts = [s.get(cls.KEY_SRC_TEXT, cls.DEFAULT_SRC_TEXT) for s in samples]
-        asr_output = None
-        if samples[0].get(cls.ASR_OUTPUT, None) is not None:
-            asr_output = [s.get(cls.ASR_OUTPUT, "") for s in samples]
 
-        speakers = [s.get(cls.KEY_SPEAKER, cls.DEFAULT_SPEAKER) for s in samples]
-        src_langs = [s.get(cls.KEY_SRC_LANG, cls.DEFAULT_LANG) for s in samples]
-        tgt_langs = [s.get(cls.KEY_TGT_LANG, cls.DEFAULT_LANG) for s in samples]
+        if not split_name.startswith("train"):
+            ids = [s[cls.KEY_ID] for s in samples]
+            audio_paths = [(audio_root / s[cls.KEY_AUDIO]).as_posix() for s in samples]
+            n_frames = [int(s[cls.KEY_N_FRAMES]) for s in samples]
+            tgt_texts = [s[tgt_field] for s in samples]
+            src_texts = [s.get(cls.KEY_SRC_TEXT, None) for s in samples]
+            asr_output = None
+            if samples[0].get(cls.ASR_OUTPUT, None) is not None:
+                asr_output = [s.get(cls.ASR_OUTPUT, "") for s in samples]
+
+            speakers = [s.get(cls.KEY_SPEAKER, cls.DEFAULT_SPEAKER) for s in samples]
+            src_langs = [s.get(cls.KEY_SRC_LANG, cls.DEFAULT_LANG) for s in samples]
+            tgt_langs = [s.get(cls.KEY_TGT_LANG, cls.DEFAULT_LANG) for s in samples]
+        else:
+            ids, audio_paths, n_frames, tgt_texts, src_texts, asr_output, speakers, src_langs, tgt_langs = [], [], [],[],[],[],[],[],[]
+            for s in samples:
+                asr, trans = s.get(cls.ASR_OUTPUT, ""), s.get(cls.KEY_SRC_TEXT, None)
+                len_asr = len(asr.split(' '))
+                if not (len_asr - 50 < len(trans.split(' ')) < len_asr + 50):
+                    print("ignore:", s['id'])
+                    continue
+
+                if int(s[cls.KEY_N_FRAMES]) < len_asr:
+                    print("ignore:", s['id'])
+                    continue
+                ids.append(s[cls.KEY_ID])
+                audio_paths.append((audio_root / s[cls.KEY_AUDIO]).as_posix())
+                n_frames.append(int(s[cls.KEY_N_FRAMES]))
+                tgt_texts.append(s[tgt_field])
+                src_texts.append(trans)
+                asr_output.append(asr)
+                speakers.append(s.get(cls.KEY_SPEAKER, cls.DEFAULT_SPEAKER))
+                src_langs.append(s.get(cls.KEY_SRC_LANG, cls.DEFAULT_LANG))
+                tgt_langs.append(s.get(cls.KEY_TGT_LANG, cls.DEFAULT_LANG))
+
+
         return SpeechToTextDataset(
             split_name,
             is_train_split,
@@ -652,6 +678,7 @@ class SpeechToTextDatasetCreator(object):
             epoch: int,
             seed: int,
             tgt_field="tgt_text",
+            src_field="src_text",
             src_dict=None,
             src_bpe_tokenizer=None
     ) -> SpeechToTextDataset:

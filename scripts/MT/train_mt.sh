@@ -1,22 +1,22 @@
 export CUDA_VISIBLE_DEVICES=$1
-fairseq-train /home/data_ti6_c/wangdq/data/ST/ende/MT-data-bin/ \
-  --arch transformer_256 --share-decoder-input-output-embed \
-  --encoder-embed-dim 256 --decoder-embed-dim 256 \
-  --encoder-attention-heads 4 --decoder-attention-heads 4 \
+DATA=/home/data_ti6_c/wangdq/ST/middle/ende/MT
+bpe_model=/home/data_ti6_c/wangdq/ST/middle/ende/st.model
+
+fairseq-train $DATA \
+  --arch transformer_wmt_en_de --share-decoder-input-output-embed \
   --optimizer adam --adam-betas '(0.9, 0.98)' --clip-norm 0.0 \
-  --lr 5e-4 --lr-scheduler inverse_sqrt --warmup-updates 4000 \
-  --dropout 0.3 --weight-decay 0.0001 \
+  --lr 0.0007 --lr-scheduler inverse_sqrt --warmup-updates 4000 --warmup-init-lr 1e-07 \
+  --dropout 0.3 --weight-decay 0.0 \
   --criterion label_smoothed_cross_entropy --label-smoothing 0.1 \
-  --max-tokens 4096 \
-  --eval-bleu \
+  --max-tokens 16000 \
+  --fp16 --eval-bleu \
   --eval-bleu-args '{"beam": 5, "max_len_a": 1.2, "max_len_b": 10}' \
-  --eval-bleu-detok moses \
-  --eval-bleu-remove-bpe \
+  --eval-bleu-detok moses --eval-bleu-remove-bpe "sentencepiece" \
   --best-checkpoint-metric bleu --maximize-best-checkpoint-metric \
+  --save-dir /home/data_ti6_d/wangdq/save/mt_middle2/ \
+  --log-interval 500 --save-interval-updates 500 --keep-interval-updates 5 --no-epoch-checkpoints \
   --keep-best-checkpoints 5 \
-  --no-epoch-checkpoints \
-  -s en -t de \
-  --tensorboard-logdir /home/wangdq/tensorboard/ST/end2end/ \
-  --save-interval-updates 500 --keep-interval-updates 1 \
-  --save-dir /home/wangdq/save/st/ \
-  --bpe sentencepiece --sentencepiece-model /home/data_ti6_c/wangdq/data/ST/ende/st_vocab.model
+  --num-workers 0 \
+  --bpe sentencepiece --sentencepiece-model $bpe_model \
+  --reset-meters --max-update 150000 -s en -t de \
+#  --restore-file /home/wangdq/save/mt_middle/checkpoint_last.pt

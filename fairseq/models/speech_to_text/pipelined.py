@@ -1,25 +1,18 @@
 import logging
-import random
 
 import torch
 import torch.nn.functional as F
-from torch import nn
+from torch.utils.checkpoint import checkpoint
+import torch.distributed as dist
 
 from fairseq.models import (
     register_model,
     register_model_architecture,
     BaseFairseqModel
 )
-from .adapter import load_pretrained_model, TransformerAdapter
-
-
-def normal_(data):
-    # with FSDP, module params will be on CUDA, so we cast them back to CPU
-    # so that the RNG is consistent with and without FSDP
-    data.copy_(
-        data.cpu().normal_(mean=0.0, std=0.02).to(data.device)
-    )
-
+from .adapter import load_pretrained_model, TransformerAdapter, LengthPredictor
+from ..model_utils import inject_noise
+from ...criterions.st_loss import bert_score
 
 logger = logging.getLogger(__name__)
 
@@ -33,57 +26,38 @@ class PipelinedST(BaseFairseqModel):
         self.task = task
         self.ASR_task, self.ASR_model, self.ASR_cfg = load_pretrained_model(args.ASR_path,
                                                                             {"config_yaml": args.ASR_config},
-                                                                            freeze=args.freeze_ASR,
-                                                                            freeze_encoder=args.freeze_ASR_encoder)
-        self.MT_task, self.MT_model, self.MT_cfg = load_pretrained_model(args.MT_path, freeze=args.freeze_NMT,
-                                                                         freeze_encoder=args.freeze_NMT_encoder)
+                                                                            freeze=args.freeze_ASR)
+        path = "/".join(args.data.split('/')[:-1]) + '/MT'
+        self.MT_task, self.MT_model, self.MT_cfg = load_pretrained_model(args.MT_path, {
+            "data": path}, freeze=args.freeze_NMT)
 
         self.src_pad = self.task.source_dictionary.pad()
         self.src_eos = self.task.source_dictionary.eos()
         self.src_bos = self.task.source_dictionary.bos()
         self.tgt_pad = self.task.target_dictionary.pad()
 
-        self.adapter = self.build_adapter(deep_adapter=False)
-
-        self.hidden_embedding_loss = args.hidden_embedding_loss
-
+        self.mse_loss = getattr(args, "mse_loss", False)
         self.word_loss = getattr(args, "word_loss", False)
-        self.layer_mse = getattr(args, "layer_mse", False)
-        self.MT_loss = getattr(args, "MT_loss", False)
-        self.source_word_loss = getattr(args, "source_word_loss", False)
+        self.ASR_loss = getattr(args, "ASR_loss", False)
 
-        self.kl_1 = getattr(args, "kl_1", False)
-        self.kl_2 = getattr(args, "kl_2", False)
+        self.use_asr_output = getattr(args, "use_asr_output", False)
+        self.noise_input = getattr(args, "noise_input", False)
 
-        if self.source_word_loss:
-            self.source_output = nn.Linear(self.MT_model.encoder.embed_dim, len(self.task.source_dictionary))
+        self.predict_length = getattr(self.args, "predict_length", False)
+        if self.predict_length:
+            self.length_predictor = LengthPredictor(self.src_pad, dim=self.ASR_model.decoder.embed_dim)
+        self.use_attention = getattr(self.args, "use_attention", False)
 
-        if self.MT_loss:
-            assert not args.freeze_NMT or self.share_adapter
+        self.bert_score = getattr(args, "bert_score", False)
+        self.adapter = self.build_adapter()
 
-        self.glancing_training = getattr(args, "glancing_training", False)
-        self.max_step = 100000
-        args.layers = getattr(args, "layers", '')
-        if args.layers:
-            self.layers = list(map(int, args.layers.split(',')))
+    def build_adapter(self):
 
-    def build_adapter(self, deep_adapter=False):
-
-        adapter = TransformerAdapter(self.ASR_model.decoder.embed_dim, self.MT_model.encoder.embed_dim,
+        adapter = TransformerAdapter(self.ASR_model.decoder.embed_dim,
+                                     use_attention=self.use_attention,
                                      pad=self.src_pad, MT_cfg=self.MT_cfg.model,
                                      src_dict=self.task.source_dictionary,
-                                     embed_tokens=self.MT_model.encoder.embed_tokens,
-                                     deep_adapter=deep_adapter)
-
-        init_adapter = getattr(self.args, "init_adapter", False)
-        if init_adapter:
-            logger.info("init the adapter with MT model encoder")
-            adapter.init(self.MT_model.encoder.state_dict())
-
-        self.share_adapter = getattr(self.args, "share_adapter", False)
-        if self.share_adapter:
-            logger.info("share the adapter with MT model encoder")
-            adapter.share(self.MT_model.encoder)
+                                     embed_tokens=self.MT_model.encoder.embed_tokens)
         return adapter
 
     @staticmethod
@@ -94,25 +68,20 @@ class PipelinedST(BaseFairseqModel):
 
         parser.add_argument('--freeze-NMT', action="store_true")
         parser.add_argument('--freeze-ASR', action="store_true")
-        parser.add_argument('--freeze-NMT-encoder', action="store_true")
-        parser.add_argument('--freeze-ASR-encoder', action="store_true")
 
-        parser.add_argument('--init-adapter', action="store_true")
-        parser.add_argument('--share-adapter', action="store_true")
-        # loss config
-        parser.add_argument('--hidden-embedding-loss', type=str, default="")  # mse
+        parser.add_argument('--mse-loss', action="store_true")  # mse
         parser.add_argument('--word-loss', action="store_true")
-        parser.add_argument('--MT-loss', action="store_true")
-        parser.add_argument('--source-word-loss', action="store_true")
-        # 1. no freeze NMT   2. share adapter and MT encoder
-        parser.add_argument('--layer-mse', action="store_true")
-        parser.add_argument('--layers', type=str, default="")  # 5,6
-        parser.add_argument('--kl-1', action="store_true")
-        parser.add_argument('--kl-2', action="store_true")
-        parser.add_argument('--kl1-weight', type=int, default=1)
-        parser.add_argument('--kl2-weight', type=int, default=1)
+        parser.add_argument('--ASR-loss', action="store_true")
 
-        parser.add_argument('--glancing-training', action="store_true")  # Adapter, MT
+        parser.add_argument('--use-asr-output', action="store_true")
+        parser.add_argument('--noise-input', action="store_true")
+
+        parser.add_argument('--adapter-input', type=str, default="transcript") # x or o
+        parser.add_argument('--encoder-input', type=str, default="transcript")
+        parser.add_argument('--use-attention', action="store_true")
+        parser.add_argument('--predict-length', action="store_true")
+
+        parser.add_argument('--bert-score', action="store_true")
 
     def get_ASR_model(self):
         return self.ASR_model
@@ -128,83 +97,86 @@ class PipelinedST(BaseFairseqModel):
         mask = tokens.ne(self.src_pad) & tokens.ne(self.src_bos) & tokens.ne(self.src_eos)
         return mask
 
+    def run_ASR(self, *args):
+        ASR_output, ASR_extra = self.ASR_model(*args)
+        return ASR_output
+
+
     def forward(self, src_tokens, src_lengths, prev_output_tokens, sample=None, **kwargs):
-        """ eval? """
+
+        # if src_tokens.size(0) > 900:
+        #     print("123")
+        #     # import pdb
+        #     # pdb.set_trace()
         if self.args.freeze_NMT:
             self.MT_model.eval()
-        if self.args.freeze_NMT_encoder:
+        else:
             self.MT_model.encoder.eval()
+
         if self.args.freeze_ASR:
             self.ASR_model.eval()
-        if self.args.freeze_ASR_encoder:
+        else:
             self.ASR_model.encoder.eval()
 
-        audio_input, audio_length = src_tokens, src_lengths,
+        audio_input, audio_length = src_tokens, src_lengths
+
+        asr_input = sample['asr_output']['tokens']
+        asr_length = sample['asr_output']['lengths']
+        prev_asr = sample['asr_output']['prev_output_tokens']
         transcript_input = sample['transcript']['tokens']
         transcript_length = sample['transcript']['lengths']
         prev_transcript = sample['transcript']['prev_output_tokens']
-        return_all_hidden = True if self.layer_mse else False
+        # print(dist.get_rank(), src_tokens.shape, transcript_input.shape, )
+        # if src_tokens.size(0) > 500:
+        #     from fairseq import pdb
+        #     pdb.set_trace()
+        if self.args.adapter_input == 'transcript':
+            adapter_input, adapter_length, prev_adapter = transcript_input, transcript_length, prev_transcript
+        else:
+            adapter_input, adapter_length, prev_adapter = asr_input, asr_length, prev_asr
 
-        ASR_output, ASR_extra = self.ASR_model(audio_input, audio_length, prev_transcript, features_only=True)
-        MT_embedding = self.MT_model.encoder(transcript_input, transcript_length,
-                                             return_all_hiddens=return_all_hidden)
+        if self.args.encoder_input == 'transcript':
+            encoder_input, encoder_length, prev_encoder = transcript_input, transcript_length, prev_transcript
+        else:
+            encoder_input, encoder_length, prev_encoder = asr_input, asr_length, prev_asr
+        adapter_mask = adapter_input.ne(self.src_pad)
+        encoder_mask = encoder_input.ne(self.src_pad)
 
-        adapter_output = self.adapter(ASR_output, ASR_tokens=transcript_input, return_all_hiddens=return_all_hidden,
-                                      glancing=self.glancing_training, step=kwargs.get("step", 0),
-                                      max_step=self.max_step, token_mask=self.get_base_mask(transcript_input),
-                                      src_embedding=self.MT_model.get_source_embedding(transcript_input),
-                                      src_pad=self.src_pad)
+        if self.noise_input:
+            prev_adapter = inject_noise(prev_adapter, dict=self.task.source_dictionary)
+
+        if self.args.freeze_ASR:
+            with torch.no_grad():
+                ASR_output, _ = self.ASR_model(audio_input, audio_length, prev_adapter, features_only=True)
+        else:
+            with torch.no_grad():
+                ASR_encoder = self.ASR_model.encoder(audio_input, audio_length)
+            ASR_output, ASR_extra = self.ASR_model.decoder(
+                prev_output_tokens=prev_adapter, encoder_out=ASR_encoder, features_only=True)
+
+        if self.use_attention:
+            adapter_output = self.adapter(ASR_output, transcript=encoder_input, adapter_input=adapter_input)
+        else:
+            adapter_output = self.adapter(ASR_output, transcript=adapter_input, adapter_input=adapter_input)
+        # print(dist.get_rank(), "end_adapter: ", audio_input.shape)
 
         loss = {}
-        if self.hidden_embedding_loss == "mse":
-            mask = transcript_input.ne(self.src_pad)
-            key = 'encoder_states' if self.layer_mse else 'encoder_out'
-            # layers = [i for i in range(len(MT_embedding[key]))] if self.layer_mse else [0]
-            layers = self.layers if self.layer_mse else [0]
-            diff = len(adapter_output[key]) - len(MT_embedding[key])
-            for i in layers:
-                adapter = adapter_output[key][i + diff].transpose(0, 1)
-                MT_output = MT_embedding[key][i].transpose(0, 1)
-                loss["mse-" + str(i) + "-loss"] = {
-                    "loss": F.mse_loss(adapter[mask], MT_output[mask], reduction="none").sum()
-                }
+        if self.mse_loss:
+            with torch.no_grad():
+                MT_embedding = self.MT_model.encoder(encoder_input, encoder_length, return_all_hiddens=False)
+            mask = encoder_input.ne(self.src_pad)
+            adapter = adapter_output["encoder_out"][-1].transpose(0, 1)
+            MT_output = MT_embedding["encoder_out"][-1].transpose(0, 1)
+            # if self.bert_score:
+            #     tgt_len = adapter.size(1)
+            #     loss["mse-loss"] = {"loss": bert_score(adapter, MT_output, adapter_mask, encoder_mask).sum() * tgt_len}
+            #     # print(loss['mse-loss']['loss'])
+            # else:
+            loss["mse-loss"] = {"loss": F.mse_loss(adapter[mask], MT_output[mask], reduction="none").sum()}
 
-        if self.kl_1:
-            adapter = adapter_output['encoder_out'][0].transpose(0, 1)
-            mt_encoder = MT_embedding['encoder_out'][0].transpose(0, 1)
-            loss["kl1-loss"] = {
-                "loss": F.kl_div(F.log_softmax(adapter, dim=-1),
-                                 F.softmax(mt_encoder, dim=-1).detach(),
-                                 reduction="sum") * self.args.kl1_weight
-            }
-
-        if self.kl_2:
-            # 随机初始化一个W
-            class_num = random.randint(100, self.MT_model.encoder.embed_dim)
-            W = torch.zeros((self.MT_model.encoder.embed_dim, class_num))
-            W.copy_(W.cpu().normal_(mean=0.0, std=5).to(W.device))
-            W = W.to(ASR_output.device)
-            W_adapter = adapter_output['encoder_out'][0].transpose(0, 1) @ W
-            W_mt_encoder = MT_embedding['encoder_out'][0].transpose(0, 1) @ W
-            loss["kl2-loss"] = {
-                "loss": F.kl_div(F.log_softmax(W_adapter, dim=-1),
-                                 F.softmax(W_mt_encoder, dim=-1).detach(),
-                                 reduction="sum") * self.args.kl2_weight
-            }
-
-        if self.source_word_loss:
-            source_output = self.source_output(adapter_output['encoder_out'][0].transpose(0, 1))
-            loss["source_word_ins"] = {
-                "out": (source_output,),
-                "tgt": transcript_input,
-                "mask": transcript_input.ne(self.src_pad),
-                "ls": self.args.label_smoothing,
-                "nll_loss": False,
-            }
 
         if self.word_loss:
-            MT_output = self.MT_model.decoder(prev_output_tokens, encoder_out=adapter_output,
-                                              src_lengths=transcript_length)
+            MT_output = self.MT_model.decoder(prev_output_tokens, encoder_out=adapter_output, src_lengths=adapter_length)
             loss["word_ins"] = {
                 "out": MT_output,
                 "tgt": sample['target'],
@@ -213,23 +185,44 @@ class PipelinedST(BaseFairseqModel):
                 "nll_loss": True,
             }
 
-        if self.MT_loss:
-            MT_output = self.MT_model(transcript_input, transcript_length, prev_output_tokens)
-            loss["MT_word_ins"] = {
-                "out": MT_output,
-                "tgt": sample['target'],
-                "mask": sample['target'].ne(self.tgt_pad),
+        if self.ASR_loss:
+            ASR_logits = self.ASR_model.decoder.output_layer(ASR_output)
+            loss["ASR"] = {
+                "out": (ASR_logits,),
+                "tgt": transcript_input,
+                "mask": transcript_input.ne(self.src_pad),
                 "ls": self.args.label_smoothing,
                 "nll_loss": False,
             }
 
+        if self.predict_length:
+            mask = asr_input.eq(self.src_pad)
+            length_out = self.length_predictor.forward(
+                False, ASR_output.transpose(0, 1), mask
+            )
+            length_tgt = self.length_predictor.get_target(
+                ASR_output.transpose(0, 1), mask, tgt_tokens=encoder_input
+            )
+            loss['length'] = {
+                "out": (length_out, ),
+                "tgt": length_tgt,
+            }
+        # print(dist.get_rank(), "end_loss: ", audio_input.shape)
+
         return loss
 
-    def get_MT_input(self, audio_input, audio_length, prev_transcript, transcript):
-        ASR_output, ASR_extra = self.ASR_model(audio_input, audio_length, prev_transcript,
-                                               features_only=True)  # [b, l, 25]
+    def get_MT_input(self, audio_input, audio_length, prev_transcript, asr_output, no_grad=True, transcript=None):
+        assert no_grad, "only support no_grad?"
+        with torch.no_grad():
+            ASR_output, ASR_extra = self.ASR_model(audio_input, audio_length, prev_transcript,
+                                                   features_only=True)  # [b, l, 25]
 
-        return self.adapter(ASR_output, ASR_tokens=transcript)
+            if self.predict_length:
+                transcript = self.length_predictor.initialize_output_tokens(ASR_output.transpose(0, 1), asr_output.eq(self.src_pad), asr_output)
+            else:
+                transcript = asr_output
+            return self.adapter(ASR_output, transcript=transcript, adapter_input=asr_output)
+
 
     @torch.jit.export
     def get_normalized_probs(
@@ -244,6 +237,4 @@ def pipelined_st(args):
     args.ASR_path = getattr(args, "ASR_path", '')
     args.MT_path = getattr(args, "MT_path", '')
     args.freeze_NMT = getattr(args, "freeze_NMT", False)
-    args.freeze_NMT_encoder = getattr(args, "freeze_NMT_encoder", False)
-    args.freeze_ASR_encoder = getattr(args, "freeze_ASR_encoder", False)
     args.freeze_ASR = getattr(args, "freeze_ASR", False)

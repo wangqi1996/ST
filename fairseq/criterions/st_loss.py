@@ -3,14 +3,35 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
+import torch
+
 from fairseq import utils
 from fairseq.criterions import register_criterion
 from fairseq.criterions.label_smoothed_cross_entropy import LabelSmoothedCrossEntropyCriterion, \
     LabelSmoothedCrossEntropyCriterionConfig
 
 
+def bert_score(hyp_embedding, ref_embedding, hyp_masks, ref_masks):
+    ref_embedding = ref_embedding.div(torch.norm(ref_embedding, dim=-1).unsqueeze(-1))
+    hyp_embedding = hyp_embedding.div(torch.norm(hyp_embedding, dim=-1).unsqueeze(-1))
+    batch_size = ref_embedding.size(0)
+    sim = torch.bmm(hyp_embedding, ref_embedding.transpose(1, 2))
+    masks = torch.bmm(hyp_masks.unsqueeze(2).float(), ref_masks.unsqueeze(1).float())
+    masks = masks.expand(batch_size, -1, -1).contiguous().view_as(sim).to(sim.device).float()
+    sim = sim * masks
+
+    word_precision = sim.max(dim=2)[0]
+    word_recall = sim.max(dim=1)[0]
+    P = (word_precision).sum(dim=1)
+    R = (word_recall).sum(dim=1)
+    F = (P + R) / (2 * P * R)
+    F = F.masked_fill(torch.isnan(F), 0.0)
+
+    return F
+
 @register_criterion("st_loss", dataclass=LabelSmoothedCrossEntropyCriterionConfig)
 class STCriterion(LabelSmoothedCrossEntropyCriterion):
+
 
     def forward(self, model, sample, reduce=True, step=0):
         outputs = model(**sample["net_input"], sample=sample, step=step)
@@ -28,7 +49,7 @@ class STCriterion(LabelSmoothedCrossEntropyCriterion):
                     "name": obj,
                     "factor": outputs[obj].get('factor', 1),
                 })
-            elif obj in ["word_ins", "MT_word_ins", "source_word_ins", "ST", "MT", "ASR", "DAE"]:
+            elif obj in ["word_ins", "MT_word_ins", "source_word_ins", "ST", "MT", "ASR", "DAE", "length"]:
                 word_loss, word_nll_loss = self.compute_loss(model, outputs[obj]['out'], sample, reduce=reduce,
                                                              target=outputs[obj]['tgt'])
                 losses.append({

@@ -68,7 +68,8 @@ class SpeechToTextTask(LegacyFairseqTask):
     def __init__(self, args, tgt_dict):
         super().__init__(args)
         self.data_args = S2TDataConfig(Path(args.config_yaml))
-        self.tgt_field = args.tgt_field
+        self.tgt_field = getattr(args, "tgt_field", "tgt_text")
+        self.src_field = getattr(args, "src_field", "src_text")
         self.tgt_dict = tgt_dict
 
     @classmethod

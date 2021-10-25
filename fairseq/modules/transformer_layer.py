@@ -152,7 +152,7 @@ class TransformerEncoderLayerBase(nn.Module):
         residual = x
         if self.normalize_before:
             x = self.final_layer_norm(x)
-        x = self.activation_fn(self.fc1(x))
+        x = self.activation_fn(self.fc1(x), inplace=True)
         x = self.activation_dropout_module(x)
         x = self.fc2(x)
         x = self.dropout_module(x)
@@ -401,7 +401,7 @@ class TransformerDecoderLayerBase(nn.Module):
         if self.normalize_before:
             x = self.final_layer_norm(x)
 
-        x = self.activation_fn(self.fc1(x))
+        x = self.activation_fn(self.fc1(x), inplace=True)
         x = self.activation_dropout_module(x)
         x = self.fc2(x)
         x = self.dropout_module(x)

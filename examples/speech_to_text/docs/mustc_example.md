@@ -71,7 +71,8 @@ python scripts/average_checkpoints.py \
   --output "${ASR_SAVE_DIR}/${CHECKPOINT_FILENAME}"
 fairseq-generate ${MUSTC_ROOT}/en-de \
   --config-yaml config_asr.yaml --gen-subset tst-COMMON_asr --task speech_to_text \
-  --path ${ASR_SAVE_DIR}/${CHECKPOINT_FILENAME} --max-tokens 50000 --beam 5 \
+  --path ${ASR_SAVE_DIR}/${CHECKPOINT_FILENAME} --max-tokens 50
+  000 --beam 5 \
   --scoring wer --wer-tokenizer 13a --wer-lowercase --wer-remove-punct
 
 # For models trained on joint data
