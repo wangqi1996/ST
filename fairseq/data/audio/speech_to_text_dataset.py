@@ -551,7 +551,7 @@ class SpeechToTextDatasetCreator(object):
             src_langs = [s.get(cls.KEY_SRC_LANG, cls.DEFAULT_LANG) for s in samples]
             tgt_langs = [s.get(cls.KEY_TGT_LANG, cls.DEFAULT_LANG) for s in samples]
         else:
-            ids, audio_paths, n_frames, tgt_texts, src_texts, asr_output, speakers, src_langs, tgt_langs = [], [], [],[],[],[],[],[],[]
+            ids, audio_paths, n_frames, tgt_texts, src_texts, asr_output, speakers, src_langs, tgt_langs = [], [], [], [], [], [], [], [], []
             for s in samples:
                 asr, trans = s.get(cls.ASR_OUTPUT, ""), s.get(cls.KEY_SRC_TEXT, None)
                 len_asr = len(asr.split(' '))
@@ -571,7 +571,6 @@ class SpeechToTextDatasetCreator(object):
                 speakers.append(s.get(cls.KEY_SPEAKER, cls.DEFAULT_SPEAKER))
                 src_langs.append(s.get(cls.KEY_SRC_LANG, cls.DEFAULT_LANG))
                 tgt_langs.append(s.get(cls.KEY_TGT_LANG, cls.DEFAULT_LANG))
-
 
         return SpeechToTextDataset(
             split_name,

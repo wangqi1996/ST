@@ -29,9 +29,9 @@ def bert_score(hyp_embedding, ref_embedding, hyp_masks, ref_masks):
 
     return F
 
+
 @register_criterion("st_loss", dataclass=LabelSmoothedCrossEntropyCriterionConfig)
 class STCriterion(LabelSmoothedCrossEntropyCriterion):
-
 
     def forward(self, model, sample, reduce=True, step=0):
         outputs = model(**sample["net_input"], sample=sample, step=step)

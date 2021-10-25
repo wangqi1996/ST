@@ -2,19 +2,17 @@ import logging
 
 import torch
 import torch.nn.functional as F
-from torch.utils.checkpoint import checkpoint
-import torch.distributed as dist
 
 from fairseq.models import (
     register_model,
     register_model_architecture,
     BaseFairseqModel
 )
-from .adapter import load_pretrained_model, TransformerAdapter, LengthPredictor
-from ..model_utils import inject_noise
-from ...criterions.st_loss import bert_score
+from .adapter import load_pretrained_model, TransformerAdapter, LengthPredictor, ATDecoderAdapter
 
 logger = logging.getLogger(__name__)
+
+from torch import nn
 
 
 @register_model("pipelined_st")
@@ -39,25 +37,24 @@ class PipelinedST(BaseFairseqModel):
         self.mse_loss = getattr(args, "mse_loss", False)
         self.word_loss = getattr(args, "word_loss", False)
         self.ASR_loss = getattr(args, "ASR_loss", False)
-
-        self.use_asr_output = getattr(args, "use_asr_output", False)
-        self.noise_input = getattr(args, "noise_input", False)
+        self.source_word_loss = getattr(args, "source_word_loss", False)
+        if self.source_word_loss:
+            self.source_classifier = nn.Linear(self.MT_model.encoder.embed_dim, len(self.task.source_dictionary))
 
         self.predict_length = getattr(self.args, "predict_length", False)
         if self.predict_length:
             self.length_predictor = LengthPredictor(self.src_pad, dim=self.ASR_model.decoder.embed_dim)
-        self.use_attention = getattr(self.args, "use_attention", False)
 
-        self.bert_score = getattr(args, "bert_score", False)
         self.adapter = self.build_adapter()
 
     def build_adapter(self):
-
-        adapter = TransformerAdapter(self.ASR_model.decoder.embed_dim,
-                                     use_attention=self.use_attention,
-                                     pad=self.src_pad, MT_cfg=self.MT_cfg.model,
-                                     src_dict=self.task.source_dictionary,
-                                     embed_tokens=self.MT_model.encoder.embed_tokens)
+        AT_adapter = getattr(self.args, "AT_adapter", False)
+        if AT_adapter:
+            adapter = ATDecoderAdapter(self.ASR_model.decoder.embed_dim, pad=self.src_pad, args=self.args,
+                                       decoder=self.MT_model.decoder)
+        else:
+            adapter = TransformerAdapter(self.ASR_model.decoder.embed_dim, pad=self.src_pad, args=self.args,
+                                         encoder=self.MT_model.encoder)
         return adapter
 
     @staticmethod
@@ -72,16 +69,16 @@ class PipelinedST(BaseFairseqModel):
         parser.add_argument('--mse-loss', action="store_true")  # mse
         parser.add_argument('--word-loss', action="store_true")
         parser.add_argument('--ASR-loss', action="store_true")
+        parser.add_argument('--source-word-loss', action="store_true")
 
-        parser.add_argument('--use-asr-output', action="store_true")
-        parser.add_argument('--noise-input', action="store_true")
-
-        parser.add_argument('--adapter-input', type=str, default="transcript") # x or o
+        parser.add_argument('--adapter-input', type=str, default="transcript")  # x or o
         parser.add_argument('--encoder-input', type=str, default="transcript")
-        parser.add_argument('--use-attention', action="store_true")
-        parser.add_argument('--predict-length', action="store_true")
 
-        parser.add_argument('--bert-score', action="store_true")
+        parser.add_argument('--use-attention', action="store_true")
+        parser.add_argument('--attention-type', type=str, default="cross")  # uniform soft
+        parser.add_argument('--AT-adapter', action="store_true")
+
+        parser.add_argument('--predict-length', action="store_true")
 
     def get_ASR_model(self):
         return self.ASR_model
@@ -93,21 +90,7 @@ class PipelinedST(BaseFairseqModel):
     def build_model(cls, args, task):
         return cls(args, task)
 
-    def get_base_mask(self, tokens):
-        mask = tokens.ne(self.src_pad) & tokens.ne(self.src_bos) & tokens.ne(self.src_eos)
-        return mask
-
-    def run_ASR(self, *args):
-        ASR_output, ASR_extra = self.ASR_model(*args)
-        return ASR_output
-
-
     def forward(self, src_tokens, src_lengths, prev_output_tokens, sample=None, **kwargs):
-
-        # if src_tokens.size(0) > 900:
-        #     print("123")
-        #     # import pdb
-        #     # pdb.set_trace()
         if self.args.freeze_NMT:
             self.MT_model.eval()
         else:
@@ -126,10 +109,7 @@ class PipelinedST(BaseFairseqModel):
         transcript_input = sample['transcript']['tokens']
         transcript_length = sample['transcript']['lengths']
         prev_transcript = sample['transcript']['prev_output_tokens']
-        # print(dist.get_rank(), src_tokens.shape, transcript_input.shape, )
-        # if src_tokens.size(0) > 500:
-        #     from fairseq import pdb
-        #     pdb.set_trace()
+
         if self.args.adapter_input == 'transcript':
             adapter_input, adapter_length, prev_adapter = transcript_input, transcript_length, prev_transcript
         else:
@@ -139,11 +119,6 @@ class PipelinedST(BaseFairseqModel):
             encoder_input, encoder_length, prev_encoder = transcript_input, transcript_length, prev_transcript
         else:
             encoder_input, encoder_length, prev_encoder = asr_input, asr_length, prev_asr
-        adapter_mask = adapter_input.ne(self.src_pad)
-        encoder_mask = encoder_input.ne(self.src_pad)
-
-        if self.noise_input:
-            prev_adapter = inject_noise(prev_adapter, dict=self.task.source_dictionary)
 
         if self.args.freeze_ASR:
             with torch.no_grad():
@@ -154,29 +129,35 @@ class PipelinedST(BaseFairseqModel):
             ASR_output, ASR_extra = self.ASR_model.decoder(
                 prev_output_tokens=prev_adapter, encoder_out=ASR_encoder, features_only=True)
 
-        if self.use_attention:
-            adapter_output = self.adapter(ASR_output, transcript=encoder_input, adapter_input=adapter_input)
+        with torch.no_grad():
+            MT_embedding = self.MT_model.encoder(encoder_input, encoder_length, return_all_hiddens=False)
+            MT_output = MT_embedding["encoder_out"][-1].transpose(0, 1)
+
+        if self.predict_length:
+            adapter_output = self.adapter(ASR_output, length_token=encoder_input, adapter_input=adapter_input,
+                                          encoder_hidden_state=MT_output)
         else:
-            adapter_output = self.adapter(ASR_output, transcript=adapter_input, adapter_input=adapter_input)
-        # print(dist.get_rank(), "end_adapter: ", audio_input.shape)
+            adapter_output = self.adapter(ASR_output, length_token=adapter_input, adapter_input=adapter_input,
+                                          encoder_hidden_state=MT_output)
+
+        adapter = adapter_output["encoder_out"][-1].transpose(0, 1)
 
         loss = {}
         if self.mse_loss:
-            with torch.no_grad():
-                MT_embedding = self.MT_model.encoder(encoder_input, encoder_length, return_all_hiddens=False)
             mask = encoder_input.ne(self.src_pad)
-            adapter = adapter_output["encoder_out"][-1].transpose(0, 1)
-            MT_output = MT_embedding["encoder_out"][-1].transpose(0, 1)
-            # if self.bert_score:
-            #     tgt_len = adapter.size(1)
-            #     loss["mse-loss"] = {"loss": bert_score(adapter, MT_output, adapter_mask, encoder_mask).sum() * tgt_len}
-            #     # print(loss['mse-loss']['loss'])
-            # else:
             loss["mse-loss"] = {"loss": F.mse_loss(adapter[mask], MT_output[mask], reduction="none").sum()}
 
+        if self.source_word_loss:
+            loss["source_word_ins"] = {
+                "out": self.source_classifier(adapter),
+                "tgt": sample['transcript']['tokens'],
+                "mask": sample['transcript']['tokens'].ne(self.src_pad),
+                "ls": self.args.label_smoothing
+            }
 
         if self.word_loss:
-            MT_output = self.MT_model.decoder(prev_output_tokens, encoder_out=adapter_output, src_lengths=adapter_length)
+            MT_output = self.MT_model.decoder(prev_output_tokens, encoder_out=adapter_output,
+                                              src_lengths=adapter_length)
             loss["word_ins"] = {
                 "out": MT_output,
                 "tgt": sample['target'],
@@ -204,25 +185,24 @@ class PipelinedST(BaseFairseqModel):
                 ASR_output.transpose(0, 1), mask, tgt_tokens=encoder_input
             )
             loss['length'] = {
-                "out": (length_out, ),
+                "out": (length_out,),
                 "tgt": length_tgt,
             }
-        # print(dist.get_rank(), "end_loss: ", audio_input.shape)
 
         return loss
 
-    def get_MT_input(self, audio_input, audio_length, prev_transcript, asr_output, no_grad=True, transcript=None):
+    def get_MT_input(self, audio_input, audio_length, pre_adapter, asr_output, no_grad=True, transcript=None):
         assert no_grad, "only support no_grad?"
         with torch.no_grad():
-            ASR_output, ASR_extra = self.ASR_model(audio_input, audio_length, prev_transcript,
+            ASR_output, ASR_extra = self.ASR_model(audio_input, audio_length, pre_adapter,
                                                    features_only=True)  # [b, l, 25]
-
-            if self.predict_length:
-                transcript = self.length_predictor.initialize_output_tokens(ASR_output.transpose(0, 1), asr_output.eq(self.src_pad), asr_output)
-            else:
-                transcript = asr_output
-            return self.adapter(ASR_output, transcript=transcript, adapter_input=asr_output)
-
+            if transcript is None:
+                if self.predict_length:
+                    transcript = self.length_predictor.initialize_output_tokens(ASR_output.transpose(0, 1),
+                                                                                asr_output.eq(self.src_pad), asr_output)
+                else:
+                    transcript = asr_output
+            return self.adapter(ASR_output, length_token=transcript, adapter_input=asr_output)
 
     @torch.jit.export
     def get_normalized_probs(
