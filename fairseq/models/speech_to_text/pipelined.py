@@ -45,16 +45,16 @@ class PipelinedST(BaseFairseqModel):
         if self.predict_length:
             self.length_predictor = LengthPredictor(self.src_pad, dim=self.ASR_model.decoder.embed_dim)
 
+        self.AT_adapter = getattr(self.args, "AT_adapter", False)
         self.adapter = self.build_adapter()
 
     def build_adapter(self):
-        AT_adapter = getattr(self.args, "AT_adapter", False)
-        if AT_adapter:
+        if self.AT_adapter:
             adapter = ATDecoderAdapter(self.ASR_model.decoder.embed_dim, pad=self.src_pad, args=self.args,
-                                       decoder=self.MT_model.decoder)
+                                       decoder=self.ASR_model.decoder)
         else:
             adapter = TransformerAdapter(self.ASR_model.decoder.embed_dim, pad=self.src_pad, args=self.args,
-                                         encoder=self.MT_model.encoder)
+                                         encoder=self.MT_model.encoder, decoder=self.MT_model.decoder)
         return adapter
 
     @staticmethod
@@ -77,6 +77,7 @@ class PipelinedST(BaseFairseqModel):
         parser.add_argument('--use-attention', action="store_true")
         parser.add_argument('--attention-type', type=str, default="cross")  # uniform soft
         parser.add_argument('--AT-adapter', action="store_true")
+        parser.add_argument('--glancing-training', action="store_true")
 
         parser.add_argument('--predict-length', action="store_true")
 
@@ -85,6 +86,9 @@ class PipelinedST(BaseFairseqModel):
 
     def get_MT_model(self):
         return self.MT_model
+
+    def get_adapter_model(self):
+        return self.adapter
 
     @classmethod
     def build_model(cls, args, task):
@@ -133,14 +137,14 @@ class PipelinedST(BaseFairseqModel):
             MT_embedding = self.MT_model.encoder(encoder_input, encoder_length, return_all_hiddens=False)
             MT_output = MT_embedding["encoder_out"][-1].transpose(0, 1)
 
+        adapter_logits = None
         if self.predict_length:
-            adapter_output = self.adapter(ASR_output, length_token=encoder_input, adapter_input=adapter_input,
-                                          encoder_hidden_state=MT_output)
+            adapter = self.adapter(ASR_output, length_token=encoder_input, adapter_input=adapter_input,
+                                   encoder_hidden_state=MT_output, prev_output_tokens=prev_output_tokens,
+                                   reference=sample['target'])
         else:
-            adapter_output = self.adapter(ASR_output, length_token=adapter_input, adapter_input=adapter_input,
-                                          encoder_hidden_state=MT_output)
-
-        adapter = adapter_output["encoder_out"][-1].transpose(0, 1)
+            adapter, adapter_logits = self.adapter(ASR_output, prev_encoder=prev_encoder,
+                                                   adapter_input=adapter_input)
 
         loss = {}
         if self.mse_loss:
@@ -148,8 +152,11 @@ class PipelinedST(BaseFairseqModel):
             loss["mse-loss"] = {"loss": F.mse_loss(adapter[mask], MT_output[mask], reduction="none").sum()}
 
         if self.source_word_loss:
+            if adapter_logits is None:
+                adapter_logits = self.source_classifier(adapter)
+
             loss["source_word_ins"] = {
-                "out": self.source_classifier(adapter),
+                "out": (adapter_logits,),
                 "tgt": sample['transcript']['tokens'],
                 "mask": sample['transcript']['tokens'].ne(self.src_pad),
                 "ls": self.args.label_smoothing
@@ -192,6 +199,9 @@ class PipelinedST(BaseFairseqModel):
         return loss
 
     def get_MT_input(self, audio_input, audio_length, pre_adapter, asr_output, no_grad=True, transcript=None):
+        if self.AT_adapter:
+            return self.get_MT_input_for_AT(audio_input, audio_length, pre_adapter, asr_output, no_grad, transcript)
+
         assert no_grad, "only support no_grad?"
         with torch.no_grad():
             ASR_output, ASR_extra = self.ASR_model(audio_input, audio_length, pre_adapter,

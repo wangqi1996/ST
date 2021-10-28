@@ -249,7 +249,7 @@ class TransformerDecoderBase(FairseqIncrementalDecoder):
             full_context_alignment,
             alignment_layer,
             alignment_heads,
-            token_embedding=None,
+            token_embedding=token_embedding,
         )
 
     """

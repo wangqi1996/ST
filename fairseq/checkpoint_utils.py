@@ -7,7 +7,6 @@ import ast
 import collections
 import contextlib
 import logging
-import numpy as np
 import os
 import re
 import time
@@ -15,7 +14,10 @@ import traceback
 from collections import OrderedDict
 from typing import Any, Dict, Optional, Union
 
+import numpy as np
 import torch
+from omegaconf import DictConfig, open_dict, OmegaConf
+
 from fairseq.data import data_utils
 from fairseq.dataclass.configs import CheckpointConfig
 from fairseq.dataclass.utils import (
@@ -25,8 +27,6 @@ from fairseq.dataclass.utils import (
 from fairseq.distributed.fully_sharded_data_parallel import FSDP, has_FSDP
 from fairseq.file_io import PathManager
 from fairseq.models import FairseqDecoder, FairseqEncoder
-from omegaconf import DictConfig, open_dict, OmegaConf
-
 
 logger = logging.getLogger(__name__)
 
@@ -68,16 +68,16 @@ def save_checkpoint(cfg: CheckpointConfig, trainer, epoch_itr, val_loss):
     suffix = trainer.checkpoint_suffix
     checkpoint_conds = collections.OrderedDict()
     checkpoint_conds["checkpoint{}{}.pt".format(epoch, suffix)] = (
-        end_of_epoch and not cfg.no_epoch_checkpoints and epoch % cfg.save_interval == 0
+            end_of_epoch and not cfg.no_epoch_checkpoints and epoch % cfg.save_interval == 0
     )
     checkpoint_conds["checkpoint_{}_{}{}.pt".format(epoch, updates, suffix)] = (
-        not end_of_epoch
-        and cfg.save_interval_updates > 0
-        and updates % cfg.save_interval_updates == 0
+            not end_of_epoch
+            and cfg.save_interval_updates > 0
+            and updates % cfg.save_interval_updates == 0
     )
     checkpoint_conds["checkpoint_best{}.pt".format(suffix)] = val_loss is not None and (
-        not hasattr(save_checkpoint, "best")
-        or is_better(val_loss, save_checkpoint.best)
+            not hasattr(save_checkpoint, "best")
+            or is_better(val_loss, save_checkpoint.best)
     )
     if val_loss is not None and cfg.keep_best_checkpoints > 0:
         worst_best = getattr(save_checkpoint, "best", None)
@@ -153,7 +153,7 @@ def save_checkpoint(cfg: CheckpointConfig, trainer, epoch_itr, val_loss):
                 if x[1] % cfg.keep_interval_updates_pattern != 0
             ]
 
-        for old_chk in checkpoints[cfg.keep_interval_updates :]:
+        for old_chk in checkpoints[cfg.keep_interval_updates:]:
             if os.path.lexists(old_chk):
                 os.remove(old_chk)
             elif PathManager.exists(old_chk):
@@ -164,7 +164,7 @@ def save_checkpoint(cfg: CheckpointConfig, trainer, epoch_itr, val_loss):
         checkpoints = checkpoint_paths(
             cfg.save_dir, pattern=r"checkpoint(\d+){}\.pt".format(suffix)
         )
-        for old_chk in checkpoints[cfg.keep_last_epochs :]:
+        for old_chk in checkpoints[cfg.keep_last_epochs:]:
             if os.path.lexists(old_chk):
                 os.remove(old_chk)
             elif PathManager.exists(old_chk):
@@ -180,7 +180,7 @@ def save_checkpoint(cfg: CheckpointConfig, trainer, epoch_itr, val_loss):
         )
         if not cfg.maximize_best_checkpoint_metric:
             checkpoints = checkpoints[::-1]
-        for old_chk in checkpoints[cfg.keep_best_checkpoints :]:
+        for old_chk in checkpoints[cfg.keep_best_checkpoints:]:
             if os.path.lexists(old_chk):
                 os.remove(old_chk)
             elif PathManager.exists(old_chk):
@@ -202,7 +202,7 @@ def load_checkpoint(cfg: CheckpointConfig, trainer, **passthrough_args):
     reset_dataloader = cfg.reset_dataloader
 
     if cfg.finetune_from_model is not None and (
-        reset_optimizer or reset_lr_scheduler or reset_meters or reset_dataloader
+            reset_optimizer or reset_lr_scheduler or reset_meters or reset_dataloader
     ):
         raise ValueError(
             "--finetune-from-model can not be set together with either --reset-optimizer"
@@ -211,7 +211,7 @@ def load_checkpoint(cfg: CheckpointConfig, trainer, **passthrough_args):
 
     suffix = trainer.checkpoint_suffix
     if (
-        cfg.restore_file == "checkpoint_last.pt"
+            cfg.restore_file == "checkpoint_last.pt"
     ):  # default value of restore_file is 'checkpoint_last.pt'
         checkpoint_path = os.path.join(
             cfg.save_dir, "checkpoint_last{}.pt".format(suffix)
@@ -254,10 +254,10 @@ def load_checkpoint(cfg: CheckpointConfig, trainer, **passthrough_args):
     )
 
     if (
-        extra_state is not None
-        and "best" in extra_state
-        and not reset_optimizer
-        and not reset_meters
+            extra_state is not None
+            and "best" in extra_state
+            and not reset_optimizer
+            and not reset_meters
     ):
         save_checkpoint.best = extra_state["best"]
 
@@ -341,13 +341,13 @@ def load_checkpoint_to_cpu(path, arg_overrides=None, load_on_all_ranks=False):
 
 
 def load_model_ensemble(
-    filenames,
-    arg_overrides: Optional[Dict[str, Any]] = None,
-    task=None,
-    strict=True,
-    suffix="",
-    num_shards=1,
-    state=None,
+        filenames,
+        arg_overrides: Optional[Dict[str, Any]] = None,
+        task=None,
+        strict=True,
+        suffix="",
+        num_shards=1,
+        state=None,
 ):
     """Loads an ensemble of models.
 
@@ -358,7 +358,7 @@ def load_model_ensemble(
         task (fairseq.tasks.FairseqTask, optional): task to use for loading
     """
     assert not (
-        strict and num_shards > 1
+            strict and num_shards > 1
     ), "Cannot load state dict with strict=True and checkpoint shards > 1"
     ensemble, args, _task = load_model_ensemble_and_task(
         filenames,
@@ -373,7 +373,7 @@ def load_model_ensemble(
 
 
 def get_maybe_sharded_checkpoint_filename(
-    filename: str, suffix: str, shard_idx: int, num_shards: int
+        filename: str, suffix: str, shard_idx: int, num_shards: int
 ) -> str:
     orig_filename = filename
     filename = filename.replace(".pt", suffix + ".pt")
@@ -388,20 +388,20 @@ def get_maybe_sharded_checkpoint_filename(
 
 
 def load_model_ensemble_and_task(
-    filenames,
-    arg_overrides: Optional[Dict[str, Any]] = None,
-    task=None,
-    strict=True,
-    suffix="",
-    num_shards=1,
-    state=None,
+        filenames,
+        arg_overrides: Optional[Dict[str, Any]] = None,
+        task=None,
+        strict=True,
+        suffix="",
+        num_shards=1,
+        state=None,
 ):
     assert state is None or len(filenames) == 1
 
     from fairseq import tasks
 
     assert not (
-        strict and num_shards > 1
+            strict and num_shards > 1
     ), "Cannot load state dict with strict=True and checkpoint shards > 1"
     ensemble = []
     cfg = None
@@ -456,7 +456,7 @@ def load_model_ensemble_and_task(
                 # model parallel checkpoint or unsharded checkpoint
                 model = task.build_model(cfg.model)
                 model.load_state_dict(
-                    state["model"], strict=strict, model_cfg=cfg.model
+                    state["model"], strict=False, model_cfg=cfg.model
                 )
 
             # reset state so it gets loaded for the next model in ensemble
@@ -464,7 +464,7 @@ def load_model_ensemble_and_task(
             if shard_idx % 10 == 0 and shard_idx > 0:
                 elapsed = time.time() - st
                 logger.info(
-                    f"Loaded {shard_idx} shards in {elapsed:.2f}s, {elapsed / (shard_idx+1):.2f}s/shard"
+                    f"Loaded {shard_idx} shards in {elapsed:.2f}s, {elapsed / (shard_idx + 1):.2f}s/shard"
                 )
 
         # build model for ensemble
@@ -564,9 +564,9 @@ def _upgrade_state_dict(state):
         state["optimizer_history"][-1]["num_updates"] = 0
     # old model checkpoints may not have separate source/target positions
     if (
-        "args" in state
-        and hasattr(state["args"], "max_positions")
-        and not hasattr(state["args"], "max_source_positions")
+            "args" in state
+            and hasattr(state["args"], "max_positions")
+            and not hasattr(state["args"], "max_source_positions")
     ):
         state["args"].max_source_positions = state["args"].max_positions
         state["args"].max_target_positions = state["args"].max_positions
@@ -601,11 +601,11 @@ def _upgrade_state_dict(state):
             del state["args"].min_lr
         # binary_cross_entropy / kd_binary_cross_entropy => wav2vec criterion
         if (
-            hasattr(state["args"], "criterion")
-            and state["args"].criterion in [
-                "binary_cross_entropy",
-                "kd_binary_cross_entropy",
-            ]
+                hasattr(state["args"], "criterion")
+                and state["args"].criterion in [
+            "binary_cross_entropy",
+            "kd_binary_cross_entropy",
+        ]
         ):
             state["args"].criterion = "wav2vec"
         # remove log_keys if it's None (criteria will supply a default value of [])
@@ -613,8 +613,8 @@ def _upgrade_state_dict(state):
             delattr(state["args"], "log_keys")
         # speech_pretraining => audio pretraining
         if (
-            hasattr(state["args"], "task")
-            and state["args"].task == "speech_pretraining"
+                hasattr(state["args"], "task")
+                and state["args"].task == "speech_pretraining"
         ):
             state["args"].task = "audio_pretraining"
         # audio_cpc => wav2vec
@@ -625,9 +625,9 @@ def _upgrade_state_dict(state):
             state["args"].lr = [state["args"].lr]
         # convert task data arg to a string instead of List[string]
         if (
-            hasattr(state["args"], "data")
-            and isinstance(state["args"].data, list)
-            and len(state["args"].data) > 0
+                hasattr(state["args"], "data")
+                and isinstance(state["args"].data, list)
+                and len(state["args"].data) > 0
         ):
             state["args"].data = state["args"].data[0]
         # remove keys in state["args"] related to teacher-student learning
@@ -647,25 +647,25 @@ def _upgrade_state_dict(state):
         with open_dict(cfg):
             # any upgrades for Hydra-based configs
             if (
-                "task" in cfg
-                and "eval_wer_config" in cfg.task
-                and isinstance(cfg.task.eval_wer_config.print_alignment, bool)
+                    "task" in cfg
+                    and "eval_wer_config" in cfg.task
+                    and isinstance(cfg.task.eval_wer_config.print_alignment, bool)
             ):
                 cfg.task.eval_wer_config.print_alignment = "hard"
             if "generation" in cfg and isinstance(cfg.generation.print_alignment, bool):
                 cfg.generation.print_alignment = "hard"
             if (
-                "model" in cfg
-                and "w2v_args" in cfg.model
-                and cfg.model.w2v_args is not None
-                and (
+                    "model" in cfg
+                    and "w2v_args" in cfg.model
+                    and cfg.model.w2v_args is not None
+                    and (
                     hasattr(cfg.model.w2v_args, "task") or "task" in cfg.model.w2v_args
-                )
-                and hasattr(cfg.model.w2v_args.task, "eval_wer_config")
-                and cfg.model.w2v_args.task.eval_wer_config is not None
-                and isinstance(
-                    cfg.model.w2v_args.task.eval_wer_config.print_alignment, bool
-                )
+            )
+                    and hasattr(cfg.model.w2v_args.task, "eval_wer_config")
+                    and cfg.model.w2v_args.task.eval_wer_config is not None
+                    and isinstance(
+                cfg.model.w2v_args.task.eval_wer_config.print_alignment, bool
+            )
             ):
                 cfg.model.w2v_args.task.eval_wer_config.print_alignment = "hard"
 
@@ -744,9 +744,9 @@ def prune_state_dict(state_dict, model_cfg: Optional[DictConfig]):
                     layer_name
                 )
                 new_state_key = (
-                    layer_name[: substitution_match.start(1)]
-                    + new_layer_number
-                    + layer_name[substitution_match.end(1) :]
+                        layer_name[: substitution_match.start(1)]
+                        + new_layer_number
+                        + layer_name[substitution_match.end(1):]
                 )
                 new_state_dict[new_state_key] = state_dict[layer_name]
 
@@ -766,7 +766,7 @@ def prune_state_dict(state_dict, model_cfg: Optional[DictConfig]):
 
 
 def load_pretrained_component_from_model(
-    component: Union[FairseqEncoder, FairseqDecoder], checkpoint: str
+        component: Union[FairseqEncoder, FairseqDecoder], checkpoint: str
 ):
     """
     Load a pretrained FairseqEncoder or FairseqDecoder from checkpoint into the
@@ -790,7 +790,7 @@ def load_pretrained_component_from_model(
     for key in state["model"].keys():
         if key.startswith(component_type):
             # encoder.input_layers.0.0.weight --> input_layers.0.0.weight
-            component_subkey = key[len(component_type) + 1 :]
+            component_subkey = key[len(component_type) + 1:]
             component_state_dict[component_subkey] = state["model"][key]
     component.load_state_dict(component_state_dict, strict=True)
     return component

@@ -11,6 +11,7 @@ from fairseq.models.transformer import (
     Embedding
 )
 from fairseq.modules.transformer_sentence_encoder import init_bert_params
+from fairseq.utils import new_arange
 
 
 def load_pretrained_model(model_path, arg_overrides=None, freeze=False, freeze_encoder=False):
@@ -128,7 +129,7 @@ def copy_module(module):
 
 class TransformerAdapter(_Adapter):
 
-    def __init__(self, dim, pad, args, encoder=None):
+    def __init__(self, dim, pad, args, encoder=None, decoder=None):
         super(TransformerAdapter, self).__init__()
         if getattr(args, "use_attention", False):
             self.mapping = LengthMapping.build_model(args.attention_type, pad, dim=dim)
@@ -137,16 +138,47 @@ class TransformerAdapter(_Adapter):
 
         self.transformer = copy_module(encoder)
         self.pad = pad
+        self.glancing_training = getattr(args, "glancing_training", False)
+        self.decoder = decoder
+        self.encoder = encoder
 
-    def forward(self, ASR_output, adapter_input=None, length_token=None, **kwargs):
+    def forward(self, ASR_output, adapter_input=None, length_token=None, prev_output_tokens=None, reference=None,
+                **kwargs):
 
         if self.mapping is not None:
             x = self.mapping(ASR_output, adapter_input, length_token)
         else:
             x = ASR_output
+
+        if self.training and self.glancing_training:
+            with torch.no_grad():
+                adapter_out = self.transformer(length_token, length_token.ne(self.pad).long().sum(-1),
+                                               token_embeddings=x)
+                decoder_out = self.decoder(prev_output_tokens, encoder_out=adapter_out)
+                tokens = decoder_out[0].argmax(-1)  # [batch_size, seq_len]
+
+                mask = reference.ne(self.pad)
+                mask_length = ((reference != tokens) & mask).long().sum(-1) * 0.5
+                encoder_embedding, _ = self.encoder.forward_embedding(length_token)
+
+                x = _mask(mask_length, x, encoder_embedding, length_token, self.pad)
+
         x = self.transformer(length_token, length_token.ne(self.pad).long().sum(-1), token_embeddings=x,
                              return_all_hiddens=False)
         return x
+
+
+def _mask(mask_length, embedding1, embedding2, tokens, pad):
+    mask = tokens.ne(pad)
+    target_score = tokens.clone().float().uniform_()
+    target_score.masked_fill_(~mask, 2.0)
+
+    _, target_rank = target_score.sort(1)
+    target_cutoff = new_arange(target_rank) < mask_length[:, None].long()
+    mask = target_cutoff.scatter(1, target_rank, target_cutoff)  # [b, l]
+
+    output = embedding2 * mask.long().unsqueeze(-1) + embedding1 * ((~mask).long().unsqueeze(-1))
+    return output
 
 
 class ATDecoderAdapter(_Adapter):
@@ -155,18 +187,12 @@ class ATDecoderAdapter(_Adapter):
         self.transformer = copy_module(decoder)
         self.pad = pad
 
-    def forward(self, ASR_output, adapter_input=None, length_token=None, encoder_hidden_state=None, **kwargs):
+    def forward(self, ASR_output, adapter_input=None, prev_encoder=None, **kwargs):
         """
-        目的：Adapter的hidden state和MT encoder的hidden state对齐。
-        训练时输入MT encoder的hidden state进行teacher-forcing训练，测试时输入Adapter的hidden state。
-            MT encoder的hidden state进行移位处理，第一个位置输入全0的表示
-        判断结束：使用Adapter的hidden state predict transcript，若结果为EOS，则终止。
-            或者考虑用二分类，会导致预测不均衡的问题。
+        Adapter有两个任务
+            一是预测transcript
+            二是将表示对齐到MT encoder hidden
         """
-        batch_size, seq_len, dim = encoder_hidden_state.shape
-        prev_encoder_hidden = encoder_hidden_state.new_zeros((batch_size, 1, dim))
-        input = torch.cat(prev_encoder_hidden, encoder_hidden_state)
-
         ASR_output = {
             "encoder_out": [ASR_output.transpose(0, 1)],  # T x B x C
             "encoder_padding_mask": [adapter_input.eq(self.pad)],  # B x T
@@ -175,13 +201,20 @@ class ATDecoderAdapter(_Adapter):
             "src_tokens": [],
             "src_lengths": [],
         }
-        output, _ = self.transformer(length_token, encoder_out=ASR_output, token_embedding=input)
-        ASR_output = {
-            "encoder_out": [output.transpose(0, 1)],  # T x B x C
-            "encoder_padding_mask": [length_token.eq(self.pad)],  # B x T
-            "encoder_embedding": [],  # B x T x C
-            "encoder_states": [],  # List[T x B x C]
-            "src_tokens": [],
-            "src_lengths": [],
-        }
-        return ASR_output
+        feature, _ = self.transformer(prev_encoder, encoder_out=ASR_output, features_only=True)
+        logits = self.transformer.output_layer(feature)
+
+        return feature, logits
+
+    # def inference(self, tokens, embedding, ASR_output, increments=None, **kwargs):
+    #     # one-step forward
+    #     seq_len, batch_size, dim = ASR_output['encoder_out'][0].shape
+    #     if embedding is None:
+    #         embedding = ASR_output['encoder_out'][0].new_zeros((batch_size, dim)).float()
+    #     embedding = embedding.unsqueeze(1)
+    #     tokens = tokens.reshape(batch_size, 1)
+    #
+    #     output, _ = self.transformer(tokens.long(), encoder_out=ASR_output, token_embedding=embedding,
+    #                                  features_only=True, incremental_state=increments)
+    #
+    #     return output

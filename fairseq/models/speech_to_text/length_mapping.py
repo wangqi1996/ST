@@ -77,6 +77,10 @@ class LengthMapping(nn.Module):
     def build_model(type, *args, **kwargs):
         if type == "uniform":
             return UniformLengthMapping(*args, **kwargs)
+        if type == "soft":
+            return SoftLengthMapping(*args, **kwargs)
+
+        assert False, "which length mapping??"
 
 
 class CrossLengthMapping(LengthMapping):
@@ -106,3 +110,8 @@ class SoftLengthMapping(LengthMapping):
     def forward(self, input, input_token, length_token, **kwargs):
         mapped_logits = _interpolate(input_token.ne(self.pad), length_token.ne(self.pad))
         return torch.bmm(mapped_logits.to(input.dtype), input)
+
+# class Inter1LengthMapping(LengthMapping):
+#     def forward(self, input, input_token, length_token, **kwargs):
+#         mapped_logits = _interpolate(input_token.ne(self.pad), length_token.ne(self.pad))
+#         return torch.bmm(mapped_logits.to(input.dtype), input)
