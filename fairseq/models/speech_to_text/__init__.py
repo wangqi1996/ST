@@ -10,3 +10,9 @@ from .xm_transformer import *  # noqa
 from .pipelined import *
 from .s2t_adapter import *
 from .join import *
+from .iterative_st import *
+from .st_transformer_adapter import *
+from .st_transformer_adapter2 import *
+from .st_transformer_adapter3 import *
+from .st_transformer_adapter4 import *
+from .st_transformer_adapter5 import *

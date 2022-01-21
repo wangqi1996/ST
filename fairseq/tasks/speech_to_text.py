@@ -18,7 +18,7 @@ from fairseq.data.audio.speech_to_text_dataset import (
     SpeechToTextDatasetCreator,
     get_features_or_waveform
 )
-from fairseq.st_generator import STGenerator
+from fairseq.st_generator import STGenerator, STGenerator2, STGenerator3
 from fairseq.tasks import register_task, LegacyFairseqTask
 
 logger = logging.getLogger(__name__)
@@ -278,7 +278,13 @@ class SpeechTranscriptToTextTask(SpeechToTextTask):
     def __init__(self, args, src_dict, tgt_dict):
         super(SpeechTranscriptToTextTask, self).__init__(args, tgt_dict)
         self.src_dict = src_dict
-        self.seq_gen_cls = STGenerator if args.gen_cls_name == 'STGenerator' else None
+        self.seq_gen_cls = None
+        if args.gen_cls_name == 'STGenerator':
+            self.seq_gen_cls = STGenerator
+        elif args.gen_cls_name == 'STGenerator2':
+            self.seq_gen_cls = STGenerator2
+        elif args.gen_cls_name == 'STGenerator3':
+            self.seq_gen_cls = STGenerator3
         # self.seq_gen_cls = STGenerator
 
     @staticmethod

@@ -5,11 +5,10 @@
 
 import math
 import sys
-from typing import Dict, List, Optional
-
 import torch
 import torch.nn as nn
 from torch import Tensor
+from typing import Dict, List, Optional
 
 from fairseq import search, utils
 from fairseq.data import data_utils

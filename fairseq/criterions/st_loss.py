@@ -34,7 +34,7 @@ def bert_score(hyp_embedding, ref_embedding, hyp_masks, ref_masks):
 class STCriterion(LabelSmoothedCrossEntropyCriterion):
 
     def forward(self, model, sample, reduce=True, step=0):
-        outputs = model(**sample["net_input"], sample=sample, step=step)
+        outputs = model(**sample["net_input"], sample=sample, step=step, pad=self.padding_idx)
         losses = []
         nll_loss = []
         sample_size = (
@@ -49,9 +49,10 @@ class STCriterion(LabelSmoothedCrossEntropyCriterion):
                     "name": obj,
                     "factor": outputs[obj].get('factor', 1),
                 })
-            elif obj in ["word_ins", "MT_word_ins", "source_word_ins", "ST", "MT", "ASR", "DAE", "length"]:
+            elif obj in ["word_ins", "MT_word_ins", "source_word_ins", 'source_word_ins2', "length"]:
                 word_loss, word_nll_loss = self.compute_loss(model, outputs[obj]['out'], sample, reduce=reduce,
-                                                             target=outputs[obj]['tgt'])
+                                                             target=outputs[obj]['tgt'],
+                                                             eps=outputs[obj].get("ls", 0.0))
                 losses.append({
                     "loss": word_loss,
                     "name": obj + '-loss',

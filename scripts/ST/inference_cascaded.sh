@@ -12,7 +12,7 @@ REM_NON_PRINT_CHAR=$SCRIPTS/tokenizer/remove-non-printing-char.perl
 
 file=$2
 subset=test
-dirname=/home/data_ti6_c/wangdq/ST/small/ende/
+dirname=/home/data_ti6_c/wangdq/ST/small_external/ende/
 fairseq-generate $dirname/ST \
   --config-yaml $dirname/ASR/asr.yaml \
   --gen-subset $subset --task speech_to_text \
@@ -61,7 +61,7 @@ fairseq-preprocess --source-lang en --target-lang de \
   --tgtdict $dirname/st.txt
 
 # MT
-fairseq-generate /home/wangdq/$file/ \
+fairseq-generate ~/$file/ \
   --gen-subset test --seed 1234 --task translation --batch-size 128 --beam 5 --remove-bpe -s en -t de \
   --path $dirname/MT/mt.pt --max-len-a 1.2 --max-len-b 10 --results-path ~/$file-MT/ \
   --bpe sentencepiece --sentencepiece-model $trg_vocab \

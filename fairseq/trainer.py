@@ -476,7 +476,7 @@ class Trainer(object):
             # load model parameters
             try:
                 self.model.load_state_dict(
-                    state["model"], strict=True, model_cfg=self.cfg.model
+                    state["model"], strict=False, model_cfg=self.cfg.model
                 )
                 # save memory for later steps
                 del state["model"]
@@ -713,6 +713,11 @@ class Trainer(object):
                 if self.cuda and self.get_num_updates() == 0:
                     torch.cuda.empty_cache()
             except RuntimeError as e:
+                if "transcript" in sample and sample['transcript']['tokens'] is not None:
+                    print("transcript", sample['transcript']['tokens'].shape)
+                    print("asr_output", sample['asr_output']['tokens'].shape)
+                print("speech", sample['net_input']['src_tokens'].shape)
+                print("target", sample['target'].shape)
                 if "out of memory" in str(e):
                     self._log_oom(e)
                     if raise_oom:

@@ -9,12 +9,12 @@ Translate pre-processed data with a trained model.
 
 import ast
 import logging
-import math
 import os
 import sys
 from argparse import Namespace
 from itertools import chain
 
+import math
 import numpy as np
 import torch
 from omegaconf import DictConfig
@@ -89,8 +89,10 @@ def _main(cfg: DictConfig, output_file):
 
     # TODO speech-to-text
     src_dict = None
+    # tgt_dict = task.target_dictionary
+    transcript_dict = task.source_dictionary
+    asr_output_dict = task.source_dictionary
     tgt_dict = task.target_dictionary
-
     overrides = ast.literal_eval(cfg.common_eval.model_overrides)
 
     # Load ensemble
@@ -222,6 +224,20 @@ def _main(cfg: DictConfig, output_file):
             else:
                 src_tokens = None
 
+            if "transcript" in sample:
+                transcript_tokens = utils.strip_pad(
+                    sample["transcript"]["tokens"][i, :], transcript_dict.pad()
+                )
+            else:
+                transcript_tokens = None
+
+            if "asr_output" in sample:
+                asr_output_tokens = utils.strip_pad(
+                    sample["asr_output"]["tokens"][i, :], asr_output_dict.pad()
+                )
+            else:
+                asr_output_tokens = None
+
             target_tokens = None
             if has_target:
                 target_tokens = (
@@ -241,6 +257,12 @@ def _main(cfg: DictConfig, output_file):
                     src_str = src_dict.string(src_tokens, cfg.common_eval.post_process)
                 else:
                     src_str = ""
+                if transcript_tokens is not None:
+                    transcript_str = transcript_dict.string(transcript_tokens, cfg.common_eval.post_process)
+
+                if asr_output_tokens is not None:
+                    asr_output_str = asr_output_dict.string(asr_output_tokens, cfg.common_eval.post_process)
+
                 if has_target:
                     target_str = tgt_dict.string(
                         target_tokens,
@@ -252,6 +274,11 @@ def _main(cfg: DictConfig, output_file):
                     )
 
             src_str = decode_fn(src_str)
+            if transcript_tokens is not None:
+                transcript_str = decode_fn(transcript_str)
+            if asr_output_tokens is not None:
+                asr_output_str = decode_fn(asr_output_str)
+
             if has_target:
                 target_str = decode_fn(target_str)
 
@@ -260,6 +287,10 @@ def _main(cfg: DictConfig, output_file):
                     print("S-{}\t{}".format(sample_id, src_str), file=output_file)
                 if has_target:
                     print("T-{}\t{}".format(sample_id, target_str), file=output_file)
+                if transcript_tokens is not None:
+                    print("Transcript-{}\t{}".format(sample_id, transcript_str), file=output_file)
+                if asr_output_tokens is not None:
+                    print("ASR-{}\t{}".format(sample_id, asr_output_str), file=output_file)
 
             # Process top predictions
             for j, hypo in enumerate(hypos[i][: cfg.generation.nbest]):
@@ -274,7 +305,7 @@ def _main(cfg: DictConfig, output_file):
                 )
                 detok_hypo_str = decode_fn(hypo_str)
                 if not cfg.common_eval.quiet:
-                    score = hypo["score"] / math.log(2)  # convert to base 2
+                    score = hypo["score"] / math.log(2) if hypo['score'] is not None else 0.0  # convert to base 2
                     # original hypothesis (after tokenization and BPE)
                     print(
                         "H-{}\t{}\t{}".format(sample_id, score, hypo_str),
@@ -294,7 +325,7 @@ def _main(cfg: DictConfig, output_file):
                                     # convert from base e to base 2
                                     hypo["positional_scores"]
                                         .div_(math.log(2))
-                                        .tolist(),
+                                        .tolist() if hypo["positional_scores"] is not None else [0.0, 0.0],
                                 )
                             ),
                         ),

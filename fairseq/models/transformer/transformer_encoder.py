@@ -119,12 +119,13 @@ class TransformerEncoderBase(FairseqEncoder):
         return self.embed_tokens(src_tokens)
 
     def forward_embedding(
-        self, src_tokens, token_embedding: Optional[torch.Tensor] = None
+            self, src_tokens, token_embedding: Optional[torch.Tensor] = None
     ):
         # embed tokens and positions
         if token_embedding is None:
             token_embedding = self.embed_tokens(src_tokens)
         x = embed = self.embed_scale * token_embedding
+
         if self.embed_positions is not None:
             x = embed + self.embed_positions(src_tokens)
         if self.layernorm_embedding is not None:
@@ -135,12 +136,12 @@ class TransformerEncoderBase(FairseqEncoder):
         return x, embed
 
     def forward(
-        self,
-        src_tokens,
-        src_lengths: Optional[torch.Tensor] = None,
-        return_all_hiddens: bool = False,
-        token_embeddings: Optional[torch.Tensor] = None,
-        **kwargs,
+            self,
+            src_tokens,
+            src_lengths: Optional[torch.Tensor] = None,
+            return_all_hiddens: bool = False,
+            token_embeddings: Optional[torch.Tensor] = None,
+            **kwargs,
     ):
         """
         Args:
@@ -176,11 +177,11 @@ class TransformerEncoderBase(FairseqEncoder):
     # Current workaround is to add a helper function with different name and
     # call the helper function from scriptable Subclass.
     def forward_scriptable(
-        self,
-        src_tokens,
-        src_lengths: Optional[torch.Tensor] = None,
-        return_all_hiddens: bool = False,
-        token_embeddings: Optional[torch.Tensor] = None,
+            self,
+            src_tokens,
+            src_lengths: Optional[torch.Tensor] = None,
+            return_all_hiddens: bool = False,
+            token_embeddings: Optional[torch.Tensor] = None,
     ):
         """
         Args:

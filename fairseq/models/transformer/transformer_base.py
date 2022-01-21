@@ -139,6 +139,7 @@ class TransformerModelBase(FairseqEncoderDecoderModel):
             alignment_layer: Optional[int] = None,
             alignment_heads: Optional[int] = None,
             src_embedding=None,
+            encoder_out=None,
             **kwargs
     ):
         """
@@ -147,9 +148,11 @@ class TransformerModelBase(FairseqEncoderDecoderModel):
         Copied from the base class, but without ``**kwargs``,
         which are not supported by TorchScript.
         """
-        encoder_out = self.encoder(
-            src_tokens, src_lengths=src_lengths, return_all_hiddens=return_all_hiddens, token_embeddings=src_embedding,
-        )
+        if encoder_out is None:
+            encoder_out = self.encoder(
+                src_tokens, src_lengths=src_lengths, return_all_hiddens=return_all_hiddens,
+                token_embeddings=src_embedding,
+            )
         decoder_out = self.decoder(
             prev_output_tokens,
             encoder_out=encoder_out,

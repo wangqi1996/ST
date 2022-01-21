@@ -536,8 +536,7 @@ class SpeechToTextDatasetCreator(object):
             src_bpe_tokenizer=None
     ) -> SpeechToTextDataset:
         audio_root = Path(cfg.audio_root)
-
-        if not split_name.startswith("train"):
+        if split_name != "train" and split_name != "train_asr":
             ids = [s[cls.KEY_ID] for s in samples]
             audio_paths = [(audio_root / s[cls.KEY_AUDIO]).as_posix() for s in samples]
             n_frames = [int(s[cls.KEY_N_FRAMES]) for s in samples]
@@ -554,18 +553,34 @@ class SpeechToTextDatasetCreator(object):
             ids, audio_paths, n_frames, tgt_texts, src_texts, asr_output, speakers, src_langs, tgt_langs = [], [], [], [], [], [], [], [], []
             for s in samples:
                 asr, trans = s.get(cls.ASR_OUTPUT, ""), s.get(cls.KEY_SRC_TEXT, None)
-                len_asr = len(asr.split(' '))
-                if not (len_asr - 50 < len(trans.split(' ')) < len_asr + 50):
-                    print("ignore:", s['id'])
+                tgt = s[tgt_field]
+                len_asr = len(asr.split(' ')) if asr is not None else 0
+                len_trans = len(trans.split(' ')) if trans is not None else 0
+                len_tgt = len(tgt.split(' '))
+                if not (len_asr - 50 < len_trans < len_asr + 50):
+                    print("ignore, asr vs transcript:", s['id'])
                     continue
 
-                if int(s[cls.KEY_N_FRAMES]) < len_asr:
-                    print("ignore:", s['id'])
+                if len_asr > int(s[cls.KEY_N_FRAMES]):
+                    print("ignore, asr vs speech:", s['id'])
                     continue
+
+                if len_trans > int(s[cls.KEY_N_FRAMES]):
+                    print("ignore, transcript vs speech:", s['id'])
+                    continue
+
+                if len_tgt > int(s[cls.KEY_N_FRAMES]):
+                    print("ignore, target vs speech:", s['id'])
+                    continue
+
+                # if int(s[cls.KEY_N_FRAMES]) < 20:
+                #     print("ignore speech:", s['id'])
+                #     continue
+
                 ids.append(s[cls.KEY_ID])
                 audio_paths.append((audio_root / s[cls.KEY_AUDIO]).as_posix())
                 n_frames.append(int(s[cls.KEY_N_FRAMES]))
-                tgt_texts.append(s[tgt_field])
+                tgt_texts.append(tgt)
                 src_texts.append(trans)
                 asr_output.append(asr)
                 speakers.append(s.get(cls.KEY_SPEAKER, cls.DEFAULT_SPEAKER))

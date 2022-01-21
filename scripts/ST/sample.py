@@ -1,17 +1,38 @@
 def process():
-    dirname = "/home/data_ti6_c/wangdq/data/ST/ende/ST/"
-    filename = dirname + "train.tsv"
+    dirname = "/home/data_ti6_c/wangdq/ST/external/ende/mustc-ST/"
+    filename = dirname + "train_asr.tsv"
+    tgt_contents = {}
     with open(filename, 'r') as f:
-        contents = f.readlines()
+        for index, line in enumerate(f.readlines()):
+            if index == 0:
+                continue
+            line = line.strip().split('\t')
+            tgt_contents[line[0]] = line[4]
 
-    _len = len(contents)
-    import random
-    samples = set(random.sample(range(_len), k=2000))
+    contents = {}
     new_content = []
-    for id, line in enumerate(contents):
-        if id in samples:
-            new_content.append(line)
-    with open(dirname + "train_2000.tsv", 'w') as f:
+    dirname2 = "/home/data_ti6_c/wangdq/ST/external/ende/ST/"
+    filename = dirname2 + "train_asr.tsv"
+    with open(filename, 'r') as f:
+        for index, line in enumerate(f.readlines()):
+            if index == 0:
+                new_content.append(line)
+                continue
+            contents[line.strip().split('\t')[0]] = line
+
+    _len = len(tgt_contents)
+    import random
+    samples = set(random.sample(list(tgt_contents.keys()), k=2000))
+
+    for s in samples:
+        c = contents[s]
+        tgt = tgt_contents[s]
+        c = c.strip().split('\t')
+        c[4] = tgt
+        c = "\t".join(c)
+        new_content.append(c + '\n')
+
+    with open("/home/wangdq/" + "train_2000.tsv", 'w') as f:
         f.writelines(new_content)
 
 

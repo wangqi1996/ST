@@ -1,7 +1,7 @@
 export CUDA_VISIBLE_DEVICES=$1
 
 gensubset=test_asr
-dirname=/home/data_ti6_c/wangdq/ST/external/ende/
+dirname=/home/data_ti6_c/wangdq/ST/small_external/ende/
 
 fairseq-generate $dirname/ST \
   --config-yaml $dirname/ST/st.yaml \

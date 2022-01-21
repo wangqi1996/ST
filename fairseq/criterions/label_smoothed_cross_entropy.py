@@ -69,7 +69,6 @@ class LabelSmoothedCrossEntropyCriterion(FairseqCriterion):
         self.ignore_prefix_size = ignore_prefix_size
         self.report_accuracy = report_accuracy
 
-
     def forward(self, model, sample, reduce=True, **kwargs):
         """Compute the loss for the given sample.
 
@@ -78,7 +77,7 @@ class LabelSmoothedCrossEntropyCriterion(FairseqCriterion):
         2) the sample size, which is used as the denominator for the gradient
         3) logging outputs to display while training
         """
-        net_output = model(**sample["net_input"], sample=sample)
+        net_output = model(**sample["net_input"], sample=sample, pad=self.padding_idx)
         loss, nll_loss = self.compute_loss(model, net_output, sample, reduce=reduce)
         sample_size = (
             sample["target"].size(0) if self.sentence_avg else sample["ntokens"]
@@ -109,12 +108,12 @@ class LabelSmoothedCrossEntropyCriterion(FairseqCriterion):
                 target = target[self.ignore_prefix_size:, :].contiguous()
         return lprobs.view(-1, lprobs.size(-1)), target.view(-1)
 
-    def compute_loss(self, model, net_output, sample, reduce=True, target=None):
+    def compute_loss(self, model, net_output, sample, reduce=True, target=None, eps=None):
         lprobs, target = self.get_lprobs_and_target(model, net_output, sample, target=target)
         loss, nll_loss = label_smoothed_nll_loss(
             lprobs,
             target,
-            self.eps,
+            eps if eps is not None else self.eps,
             ignore_index=self.padding_idx,
             reduce=reduce,
         )

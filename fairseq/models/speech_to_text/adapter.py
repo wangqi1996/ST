@@ -39,6 +39,10 @@ def load_pretrained_model(model_path, arg_overrides=None, freeze=False, freeze_e
     model.load_state_dict(
         state["model"], strict=True, model_cfg=cfg.model
     )
+
+    for param in model.parameters():
+        param.requires_grad = True
+
     # freeze parameters
     if freeze:
         for param in model.parameters():
@@ -127,9 +131,22 @@ def copy_module(module):
     return new_module
 
 
+class Adapter(_Adapter):
+
+    def __init__(self, pad, encoder=None, **kwargs):
+        super(Adapter, self).__init__()
+        self.transformer = copy_module(encoder)
+        self.pad = pad
+
+    def forward(self, ASR_output, adapter_input=None, prev_encoder=None, **kwargs):
+        x = self.transformer(prev_encoder, prev_encoder.ne(self.pad).long().sum(-1), token_embeddings=ASR_output,
+                             return_all_hiddens=False)
+        return x
+
+
 class TransformerAdapter(_Adapter):
 
-    def __init__(self, dim, pad, args, encoder=None, decoder=None):
+    def __init__(self, dim, pad, args, encoder=None, **kwargs):
         super(TransformerAdapter, self).__init__()
         if getattr(args, "use_attention", False):
             self.mapping = LengthMapping.build_model(args.attention_type, pad, dim=dim)
@@ -139,17 +156,27 @@ class TransformerAdapter(_Adapter):
         self.transformer = copy_module(encoder)
         self.pad = pad
         self.glancing_training = getattr(args, "glancing_training", False)
-        self.decoder = decoder
-        self.encoder = encoder
 
-    def forward(self, ASR_output, adapter_input=None, length_token=None, prev_output_tokens=None, reference=None,
+    def forward(self, ASR_output, adapter_input=None, prev_encoder=None, prev_output_tokens=None, reference=None,
                 **kwargs):
+
+        if self.mapping is not None:
+            x = self.mapping(ASR_output, adapter_input, prev_encoder)
+        else:
+            x = ASR_output
+        x = self.transformer(prev_encoder, prev_encoder.ne(self.pad).long().sum(-1), token_embeddings=x,
+                             return_all_hiddens=False)
+        return x
+
+    def forward_train(self, ASR_output, adapter_input=None, prev_encoder=None, prev_output_tokens=None, reference=None,
+                      **kwargs):
 
         if self.mapping is not None:
             x = self.mapping(ASR_output, adapter_input, length_token)
         else:
             x = ASR_output
 
+        embedding = x
         if self.training and self.glancing_training:
             with torch.no_grad():
                 adapter_out = self.transformer(length_token, length_token.ne(self.pad).long().sum(-1),
@@ -159,13 +186,13 @@ class TransformerAdapter(_Adapter):
 
                 mask = reference.ne(self.pad)
                 mask_length = ((reference != tokens) & mask).long().sum(-1) * 0.5
-                encoder_embedding, _ = self.encoder.forward_embedding(length_token)
+                encoder_embedding, _ = self.encoder.forward_embedding(prev_encoder)
 
-                x = _mask(mask_length, x, encoder_embedding, length_token, self.pad)
+                x = _mask(mask_length, x, encoder_embedding, prev_encoder, self.pad)
 
-        x = self.transformer(length_token, length_token.ne(self.pad).long().sum(-1), token_embeddings=x,
+        x = self.transformer(prev_encoder, prev_encoder.ne(self.pad).long().sum(-1), token_embeddings=x,
                              return_all_hiddens=False)
-        return x
+        return x, embedding
 
 
 def _mask(mask_length, embedding1, embedding2, tokens, pad):
@@ -182,10 +209,11 @@ def _mask(mask_length, embedding1, embedding2, tokens, pad):
 
 
 class ATDecoderAdapter(_Adapter):
-    def __init__(self, dim, pad, args, decoder):
+    def __init__(self, dim, pad, args, decoder, encoder):
         super(ATDecoderAdapter, self).__init__()
         self.transformer = copy_module(decoder)
         self.pad = pad
+        self.encoder = encoder
 
     def forward(self, ASR_output, adapter_input=None, prev_encoder=None, **kwargs):
         """
@@ -206,15 +234,84 @@ class ATDecoderAdapter(_Adapter):
 
         return feature, logits
 
-    # def inference(self, tokens, embedding, ASR_output, increments=None, **kwargs):
-    #     # one-step forward
-    #     seq_len, batch_size, dim = ASR_output['encoder_out'][0].shape
-    #     if embedding is None:
-    #         embedding = ASR_output['encoder_out'][0].new_zeros((batch_size, dim)).float()
-    #     embedding = embedding.unsqueeze(1)
-    #     tokens = tokens.reshape(batch_size, 1)
-    #
-    #     output, _ = self.transformer(tokens.long(), encoder_out=ASR_output, token_embedding=embedding,
-    #                                  features_only=True, incremental_state=increments)
-    #
-    #     return output
+    def forward_decoder(self, *args, **kwargs):
+        return self.transformer.forward(*args, **kwargs)
+
+    def has_encoder(self, *args, **kwargs):
+        return True
+
+    def get_normalized_probs(self, *args, **kwargs):
+        return self.transformer.get_normalized_probs(*args, **kwargs)
+
+
+class TransformerAdapter2(_Adapter):
+    def __init__(self, encoder, decoder, pad, layers=0):
+        # ASR decoder, MT encoder
+        super(TransformerAdapter2, self).__init__()
+        self.decoder = copy_module(decoder)
+        self.encoder = copy_module(encoder)
+        if layers > 0:
+            self.decoder.layers = self.decoder.layers[:layers]
+            self.encoder.layers = self.encoder.layers[:layers]
+            self.encoder.num_layers = layers
+            self.decoder.num_layers = layers
+        self.pad = pad
+
+    def load_state_dict(self, state_dict, strict: bool = True):
+        super().load_state_dict(state_dict, strict)
+
+    def forward(self, ASR_output, asr_output=None, prev_encoder=None, **kwargs):
+        asr_length = asr_output.ne(self.pad).long().sum(-1)
+        encoder_out = self.encoder(asr_output, asr_length, token_embeddings=ASR_output)
+        feature, _ = self.decoder(prev_encoder, encoder_out=encoder_out, features_only=True)
+
+        logits = self.decoder.output_layer(feature)
+        return feature, logits
+
+    def forward_decoder(self, *args, **kwargs):
+        return self.decoder.forward(*args, **kwargs)
+
+    def forward_encoder(self, net_input, **kwargs):
+        src_tokens = net_input["src_tokens"]
+        src_lengths = net_input["src_lengths"]
+        return self.encoder.forward(src_tokens, src_lengths, **kwargs)
+
+    def has_encoder(self, *args, **kwargs):
+        return True
+
+    def has_decoder(self, *args, **kwargs):
+        return True
+
+    def get_normalized_probs(self, *args, **kwargs):
+        return self.decoder.get_normalized_probs(*args, **kwargs)
+
+
+class TransformerAdapter22(TransformerAdapter2):
+
+    def forward(self, ASR_output, mask=None, prev_encoder=None, **kwargs):
+        batch, seq_len, _ = ASR_output.size()
+        tokens = mask.new_zeros((batch, seq_len)).long().fill_(self.pad + 1)
+        tokens.masked_fill_(mask, self.pad)
+        length = (~mask).long().sum(-1)
+        encoder_out = self.encoder(tokens, length, token_embeddings=ASR_output)
+        feature, _ = self.decoder(prev_encoder, encoder_out=encoder_out, features_only=True)
+        logits = self.decoder.output_layer(feature)
+
+        return feature, logits
+
+    def forward_decoder(self, *args, **kwargs):
+        return self.decoder.forward(*args, **kwargs)
+
+    def forward_encoder(self, net_input, **kwargs):
+        src_tokens = net_input["src_tokens"]
+        src_lengths = net_input["src_lengths"]
+        return self.encoder.forward(src_tokens, src_lengths, **kwargs)
+
+    def has_encoder(self, *args, **kwargs):
+        return True
+
+    def has_decoder(self, *args, **kwargs):
+        return True
+
+    def get_normalized_probs(self, *args, **kwargs):
+        return self.decoder.get_normalized_probs(*args, **kwargs)
